@@ -1,0 +1,14 @@
+global:
+  resolve_timeout: 1m
+
+route:
+  receiver: payment-remediator
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 1h
+
+receivers:
+  - name: payment-remediator
+    webhook_configs:
+      - url: http://remediator:8081/
+        send_resolved: false

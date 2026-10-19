@@ -1,0 +1,372 @@
+name: resilience-alpha
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: resilience-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-resilience}
+      POSTGRES_USER: ${POSTGRES_USER:-resilience}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-.env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - resilience-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  payment-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: resilience-payment-api
+    restart: "no"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+      PAYMENT_API_TOKEN: ${PAYMENT_API_TOKEN:?Define PAYMENT_API_TOKEN in .env}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-resilience}:${POSTGRES_PASSWORD:-change-me-in-.env}@postgres:5432/${POSTGRES_DB:-resilience}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-3000}:3000"
+    networks:
+      - resilience-net
+      - resilience-edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000}
+        REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:3000}
+        VITE_API_TOKEN: ${VITE_API_TOKEN:?Define VITE_API_TOKEN in .env}
+    container_name: resilience-frontend
+    restart: unless-stopped
+    depends_on:
+      payment-api:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    networks:
+      - resilience-net
+      - resilience-edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v3.6.0
+    container_name: resilience-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    configs:
+      - source: prometheus-config
+        target: /etc/prometheus/prometheus.yml
+      - source: payment-alerts
+        target: /etc/prometheus/payment-alerts.yml
+      - source: alertmanager-config
+        target: /etc/prometheus/alertmanager.yml
+    volumes:
+      - prometheus-data:/prometheus
+    depends_on:
+      payment-api:
+        condition: service_healthy
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - resilience-net
+      - resilience-edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    container_name: resilience-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-in-.env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    networks:
+      - resilience-net
+      - resilience-edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  loki:
+    image: grafana/loki:3.5.5
+    container_name: resilience-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/config.yml
+    configs:
+      - source: loki-config
+        target: /etc/loki/config.yml
+    volumes:
+      - loki-data:/loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    networks:
+      - resilience-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  promtail:
+    image: grafana/promtail:3.5.5
+    container_name: resilience-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    configs:
+      - source: promtail-config
+        target: /etc/promtail/config.yml
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - resilience-net
+
+  alertmanager:
+    image: prom/alertmanager:v0.29.0
+    container_name: resilience-alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    configs:
+      - source: alertmanager-config
+        target: /etc/alertmanager/alertmanager.yml
+    volumes:
+      - alertmanager-data:/alertmanager
+    depends_on:
+      remediator:
+        condition: service_started
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    networks:
+      - resilience-net
+      - resilience-edge
+
+  remediator:
+    build:
+      context: .
+      dockerfile: ansible/remediator.Dockerfile
+    container_name: resilience-remediator
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - resilience-net
+
+  anomaly-detector:
+    build:
+      context: ./ai-detector
+      dockerfile: Dockerfile
+    container_name: resilience-anomaly-detector
+    restart: unless-stopped
+    depends_on:
+      payment-api:
+        condition: service_started
+    networks:
+      - resilience-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/metrics')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  alertmanager-data:
+
+networks:
+  resilience-net:
+    name: resilience-net
+    internal: true
+  resilience-edge:
+    name: resilience-edge
+
+configs:
+  prometheus-config:
+    content: |
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+
+      rule_files:
+        - /etc/prometheus/payment-alerts.yml
+
+      scrape_configs:
+        - job_name: prometheus
+          static_configs:
+            - targets: ["localhost:9090"]
+
+        - job_name: payment-api
+          metrics_path: /metrics
+          static_configs:
+            - targets: ["payment-api:3000"]
+
+        - job_name: anomaly-detector
+          static_configs:
+            - targets: ["anomaly-detector:8000"]
+
+      alerting:
+        alertmanagers:
+          - static_configs:
+              - targets: ["alertmanager:9093"]
+  payment-alerts:
+    content: |
+      groups:
+        - name: resilience-payment
+          rules:
+            - alert: PaymentInvalidRequestBurst
+              expr: rate(payment_api_rejected_requests_total[1m]) > 5
+              for: 10s
+              labels:
+                severity: warning
+                service: payment-api
+              annotations:
+                summary: Burst de requêtes invalides sur l'API paiement
+                description: Le taux de rejets dépasse 5 requêtes par seconde.
+
+            - alert: PaymentApiDown
+              expr: up{job="payment-api"} == 0
+              for: 10s
+              labels:
+                severity: critical
+                service: payment-api
+              annotations:
+                summary: API paiement indisponible
+                description: Prometheus ne reçoit plus de métriques de l'API paiement.
+
+            - alert: PaymentMlAnomalyDetected
+              expr: resilience_anomaly_detected == 1
+              for: 10s
+              labels:
+                severity: warning
+                service: payment-api
+              annotations:
+                summary: Anomalie de trafic détectée par le modèle ML
+                description: Isolation Forest signale un profil de trafic inhabituel.
+
+  loki-config:
+    content: |
+      auth_enabled: false
+
+      server:
+        http_listen_port: 3100
+        grpc_listen_port: 9096
+
+      common:
+        path_prefix: /loki
+        replication_factor: 1
+        ring:
+          kvstore:
+            store: inmemory
+        storage:
+          filesystem:
+            chunks_directory: /loki/chunks
+            rules_directory: /loki/rules
+
+      schema_config:
+        configs:
+          - from: 2024-01-01
+            store: tsdb
+            object_store: filesystem
+            schema: v13
+            index:
+              prefix: index_
+              period: 24h
+
+      limits_config:
+        allow_structured_metadata: true
+        volume_enabled: true
+
+  alertmanager-config:
+    content: |
+      global:
+        resolve_timeout: 1m
+
+      route:
+        receiver: payment-remediator
+        group_wait: 5s
+        group_interval: 30s
+        repeat_interval: 1h
+
+      receivers:
+        - name: payment-remediator
+          webhook_configs:
+            - url: http://remediator:8081/
+              send_resolved: false
+
+  promtail-config:
+    content: |
+      server:
+        http_listen_port: 9080
+        grpc_listen_port: 0
+
+      positions:
+        filename: /tmp/positions.yaml
+
+      clients:
+        - url: http://loki:3100/loki/api/v1/push
+
+      scrape_configs:
+        - job_name: docker
+          docker_sd_configs:
+            - host: unix:///var/run/docker.sock
+              refresh_interval: 5s
+          relabel_configs:
+            - source_labels: [__meta_docker_container_name]
+              regex: '/(.*)'
+              target_label: container
+            - source_labels: [__meta_docker_container_log_stream]
+              target_label: stream
+            - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+              target_label: compose_service
+          pipeline_stages:
+            - docker: {}

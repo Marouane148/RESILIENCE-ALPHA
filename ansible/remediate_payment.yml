@@ -1,0 +1,118 @@
+---
+- name: Remediate the Resilience-Alpha payment service
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    docker_host: "{{ lookup('env', 'DOCKER_HOST') | default('unix:///var/run/docker.sock', true) }}"
+    payment_service_label: "com.docker.compose.service=payment-api"
+    payment_service_name: "payment-api"
+    recovery_retries: 12
+    recovery_delay_seconds: 5
+    healthy_payment_containers: []
+    unhealthy_payment_containers: []
+
+  tasks:
+    - name: Inspect the payment container through the local Docker API
+      community.docker.docker_container_info:
+        name: resilience-payment-api
+        docker_host: "{{ docker_host }}"
+      register: payment_container_info
+      failed_when: false
+
+    - name: Stop when the Docker API cannot be reached
+      ansible.builtin.fail:
+        msg: >-
+          Impossible de joindre l'API Docker via {{ docker_host }}.
+          Vérifiez que Docker est démarré et que l'utilisateur courant peut accéder
+          à /var/run/docker.sock.
+      when: payment_container_info.failed | default(false) | bool
+
+    - name: Set the payment container target
+      ansible.builtin.set_fact:
+        payment_container_names: "{{ ['resilience-payment-api'] if payment_container_info.exists | default(false) | bool else [] }}"
+
+    - name: Stop when no payment container was found
+      ansible.builtin.fail:
+        msg: >-
+          Aucun conteneur de paiement identifié par le nom resilience-payment-api n'a été trouvé.
+          Démarrez la stack avec docker compose avant la remédiation.
+      when: payment_container_names | length == 0
+
+    - name: Inspect payment container health
+      community.docker.docker_container_info:
+        name: "{{ item }}"
+        docker_host: "{{ docker_host }}"
+      loop: "{{ payment_container_names }}"
+      register: payment_inspections
+
+    - name: Select currently healthy payment replicas
+      ansible.builtin.set_fact:
+        healthy_payment_containers: "{{ healthy_payment_containers + [item.item] }}"
+      loop: "{{ payment_inspections.results }}"
+      when:
+        - item.exists | default(false) | bool
+        - item.container.State.Status | default('') == 'running'
+        - item.container.State.Health is defined
+        - item.container.State.Health.Status | default('') == 'healthy'
+
+    - name: Select anomalous or stopped payment replicas
+      ansible.builtin.set_fact:
+        unhealthy_payment_containers: "{{ unhealthy_payment_containers + [item.item] }}"
+      loop: "{{ payment_inspections.results }}"
+      when: >-
+        not (
+          item.exists | default(false) | bool and
+          item.container.State.Status | default('') == 'running' and
+          item.container.State.Health is defined and
+          item.container.State.Health.Status | default('') == 'healthy'
+        )
+
+    - name: Report the detected payment service state
+      ansible.builtin.debug:
+        msg:
+          service: "{{ payment_service_name }}"
+          healthy_replicas: "{{ healthy_payment_containers }}"
+          anomalous_replicas: "{{ unhealthy_payment_containers }}"
+
+    - name: Keep healthy replicas serving while repairing anomalies
+      community.docker.docker_container:
+        name: "{{ item }}"
+        state: started
+        restart: true
+        docker_host: "{{ docker_host }}"
+      loop: "{{ unhealthy_payment_containers }}"
+      when:
+        - unhealthy_payment_containers | length > 0
+        - healthy_payment_containers | length > 0
+
+    - name: Restart the payment service when no healthy replica is available
+      community.docker.docker_container:
+        name: "{{ item }}"
+        state: started
+        restart: true
+        docker_host: "{{ docker_host }}"
+      loop: "{{ unhealthy_payment_containers }}"
+      when:
+        - unhealthy_payment_containers | length > 0
+        - healthy_payment_containers | length == 0
+
+    - name: Wait for the repaired payment service to become healthy
+      ansible.builtin.command:
+        cmd: "docker inspect --format={% raw %}'{{.State.Health.Status}}'{% endraw %} resilience-payment-api"
+      register: repaired_health
+      changed_when: false
+      until: repaired_health.stdout | trim == 'healthy'
+      retries: "{{ recovery_retries }}"
+      delay: "{{ recovery_delay_seconds }}"
+      when: unhealthy_payment_containers | length > 0
+
+    - name: Confirm that at least one payment replica is healthy
+      ansible.builtin.assert:
+        that:
+          - healthy_payment_containers | length > 0 or repaired_health.stdout | default('') | trim == 'healthy'
+        fail_msg: >-
+          La remédiation n'a pas permis de rétablir une réplique saine du service de paiement.
+        success_msg: >-
+          Le service de paiement est opérationnel ; une réplique saine est disponible.
