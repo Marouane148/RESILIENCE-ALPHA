@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: Resilience Alpha
+    orgId: 1
+    folder: Resilience Alpha
+    type: file
+    disableDeletion: true
+    editable: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

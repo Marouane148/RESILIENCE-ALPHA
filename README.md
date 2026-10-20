@@ -174,6 +174,39 @@ Interfaces locales :
 - Alertmanager : http://localhost:9093
 - Grafana : http://localhost:3001
 
+## Captures Grafana pour la vidéo
+
+Grafana est provisionné automatiquement avec les sources Prometheus et Loki et le dashboard :
+
+```text
+Resilience Alpha - Incident & Recovery
+```
+
+Ouvrir Grafana :
+
+```text
+http://ADRESSE_IP_DU_PC_HOTE:3001
+```
+
+Sur le PC Hôte, l'URL locale est `http://localhost:3001`. Se connecter avec les identifiants `GRAFANA_ADMIN_USER` et `GRAFANA_ADMIN_PASSWORD` définis dans `.env`, puis ouvrir le dossier **Resilience Alpha** et le dashboard **Resilience Alpha - Incident & Recovery**.
+
+Le dashboard affiche :
+
+- disponibilité de l'API paiement (`up`) ;
+- taux de requêtes rejetées ;
+- état de l'anomalie ML ;
+- logs de `resilience-payment-api` via Loki.
+
+### Séquence de captures recommandée
+
+1. **Avant incident** : afficher le dashboard avec API disponible, anomalie ML à `0` et logs normaux.
+2. **Pendant le burst Windows** : lancer la recette PowerShell ci-dessus, régler la période Grafana sur les quinze dernières minutes et capturer la hausse des rejets ainsi que les logs.
+3. **Pendant la panne** : sur le Mac, exécuter `docker stop resilience-payment-api` et capturer l'API à `0` dans le panneau de disponibilité.
+4. **Remédiation** : capturer les logs `remediator` avec `returncode: 0` et l'API revenue à `1`.
+5. **Après reprise** : exécuter un paiement depuis le dashboard et capturer la transaction acceptée.
+
+Pour actualiser les panneaux pendant la démonstration, choisir une actualisation automatique de cinq secondes dans Grafana. Le dashboard est également accessible depuis Windows avec l'adresse LAN du PC Hôte.
+
 Identifiants Grafana : `GRAFANA_ADMIN_USER` et `GRAFANA_ADMIN_PASSWORD` définis dans `.env`.
 
 Le frontend utilise `VITE_API_TOKEN` pour appeler l'API. Les routes métier exigent le même token dans `PAYMENT_API_TOKEN`.
