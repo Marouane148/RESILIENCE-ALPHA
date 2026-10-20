@@ -23,7 +23,7 @@ Créer la configuration locale :
 cp .env.example .env
 ```
 
-Modifier `.env` et remplacer les placeholders. Les deux tokens doivent être identiques :
+Modifier `.env` et remplacer les placeholders. Les deux tokens doivent être identiques. Pour un test entre ordinateurs, remplacer `192.168.137.1` par l'adresse IP privée du PC Hôte :
 
 ```env
 POSTGRES_DB=resilience
@@ -31,6 +31,7 @@ POSTGRES_USER=resilience
 POSTGRES_PASSWORD=un-secret-local
 PAYMENT_API_TOKEN=un-token-de-laboratoire
 VITE_API_TOKEN=un-token-de-laboratoire
+VITE_API_URL=http://192.168.137.1:3000
 GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=un-secret-grafana
 ```
@@ -42,6 +43,120 @@ Démarrer toute la plateforme :
 ```bash
 docker compose up -d --build
 ```
+
+## Test entre trois ordinateurs
+
+Le PC Hôte exécute Docker. Le PC Attaquant et le PC IA doivent être connectés au même réseau privé du groupe. Aucun test ne doit viser le réseau du campus ou Internet.
+
+Sur le PC Hôte, trouver l'adresse IP privée :
+
+```bash
+# macOS
+ipconfig getifaddr en0
+
+# Windows PowerShell
+ipconfig
+```
+
+Renseigner cette adresse dans `.env`, puis reconstruire le frontend :
+
+```env
+VITE_API_URL=http://ADRESSE_IP_DU_PC_HOTE:3000
+```
+
+```bash
+docker compose up -d --build frontend
+```
+
+Depuis le PC Attaquant, tester l'API du laboratoire :
+
+```bash
+curl http://ADRESSE_IP_DU_PC_HOTE:3000/health
+```
+
+Le PC IA peut accéder uniquement aux interfaces publiées nécessaires : frontend `8080`, API `3000`, Prometheus `9090`, Grafana `3001` et Alertmanager `9093`. PostgreSQL, Loki et le socket Docker ne sont pas exposés.
+
+Pour lancer le burst contrôlé depuis le PC Attaquant :
+
+```bash
+LAB_HOST_IP=ADRESSE_IP_DU_PC_HOTE \
+  DURATION_SECONDS=10 CONCURRENCY=2 \
+  bash security/controlled_payment_burst.sh
+```
+
+Le script n'accepte que `localhost`, `127.0.0.1` ou l'adresse fournie par `LAB_HOST_IP`. En cas d'échec, vérifier le même réseau privé, le pare-feu du PC Hôte, Docker Desktop et l'absence de VPN isolant les machines.
+
+### Recette depuis Windows PowerShell
+
+Remplacer `192.168.137.23` par l'adresse IP actuelle du PC Hôte :
+
+```powershell
+$hostIp = "192.168.137.23"
+ping $hostIp
+Test-NetConnection $hostIp -Port 8080
+Test-NetConnection $hostIp -Port 3000
+curl.exe "http://${hostIp}:3000/health"
+```
+
+Ouvrir le dashboard dans le navigateur Windows :
+
+```text
+http://192.168.137.23:8080
+```
+
+Pour simuler le trafic malveillant contrôlé depuis le PC Attaquant, uniquement contre l'API fictive du PC Hôte :
+
+```powershell
+$hostIp = "192.168.137.23"
+$url = "http://${hostIp}:3000/payments"
+$body = '{"recipient":"lab-attack","amount":0}'
+
+1..300 | ForEach-Object {
+  try {
+    Invoke-WebRequest `
+      -Uri $url `
+      -Method POST `
+      -ContentType "application/json" `
+      -Body $body `
+      -TimeoutSec 2 `
+      -UseBasicParsing | Out-Null
+  } catch {}
+}
+
+Write-Host "Burst de laboratoire termine"
+```
+
+Ce scénario produit des requêtes de paiement invalides et observables. Il ne s'agit pas d'une injection SQL : l'API utilise des requêtes PostgreSQL paramétrées.
+
+Sur le Mac Hôte, observer les preuves pendant le test :
+
+```bash
+cd /Users/mac/alpha/RESILIENCE-ALPHA
+docker compose logs -f payment-api remediator
+```
+
+Dans un autre terminal Mac :
+
+```bash
+curl -s http://localhost:3000/metrics | grep payment_api
+curl -s http://localhost:9090/api/v1/alerts
+```
+
+Les alertes attendues sont `PaymentInvalidRequestBurst` et/ou `PaymentMlAnomalyDetected`.
+
+Pour démontrer ensuite la reprise autonome, arrêter uniquement l'API sur le Mac :
+
+```bash
+docker stop resilience-payment-api
+```
+
+Depuis Windows, attendre son retour :
+
+```powershell
+curl.exe --retry 12 --retry-delay 2 "http://192.168.137.23:3000/health"
+```
+
+Le résultat final attendu est un statut `ok` avec `database: ok`. Effectuer ensuite un nouveau paiement depuis le dashboard pour prouver la reprise métier.
 
 Vérifier l'état des services :
 
