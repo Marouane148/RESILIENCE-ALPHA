@@ -1,24 +1,35 @@
 #!/usr/bin/env bash
+# Burst applicatif contrôlé : requêtes de paiement invalides contre l'API fictive du laboratoire.
+# Cibles autorisées : localhost, 127.0.0.1 ou une adresse privée fournie par LAB_HOST_IP (PC Hôte du groupe).
 set -euo pipefail
 
-TARGET_URL="${TARGET_URL:-http://localhost:3000/payments}"
+LAB_HOST_IP="${LAB_HOST_IP:-}"
+API_PORT="${API_PORT:-3000}"
 DURATION_SECONDS="${DURATION_SECONDS:-10}"
 CONCURRENCY="${CONCURRENCY:-4}"
 
-case "$TARGET_URL" in
-  http://localhost:3000/payments|http://127.0.0.1:3000/payments)
-    ;;
-  *)
-    echo "Refus: TARGET_URL doit rester limite a l'API locale du laboratoire." >&2
-    exit 2
-    ;;
-esac
+private_ip='^(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})$'
 
-if ! [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || ! [[ "$CONCURRENCY" =~ ^[1-9][0-9]*$ ]]; then
-  echo "DURATION_SECONDS et CONCURRENCY doivent etre des entiers positifs." >&2
+if [[ -z "$LAB_HOST_IP" ]]; then
+  host="localhost"
+elif [[ "$LAB_HOST_IP" =~ $private_ip ]]; then
+  host="$LAB_HOST_IP"
+else
+  echo "Refus: LAB_HOST_IP doit etre une adresse privee du reseau du groupe (10.x, 172.16-31.x, 192.168.x)." >&2
   exit 2
 fi
 
+if [[ -n "${TARGET_URL:-}" ]]; then
+  echo "Refus: TARGET_URL n'est plus accepte, utilisez LAB_HOST_IP pour designer le PC Hote du laboratoire." >&2
+  exit 2
+fi
+
+if ! [[ "$API_PORT" =~ ^[0-9]{2,5}$ ]] || ! [[ "$DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]] || ! [[ "$CONCURRENCY" =~ ^[1-9][0-9]*$ ]]; then
+  echo "API_PORT, DURATION_SECONDS et CONCURRENCY doivent etre des entiers positifs." >&2
+  exit 2
+fi
+
+TARGET_URL="http://${host}:${API_PORT}/payments"
 end_time=$((SECONDS + DURATION_SECONDS))
 request_body='{"recipient":"lab-attack","amount":0}'
 

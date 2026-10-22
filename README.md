@@ -1,344 +1,264 @@
 # Project Resilience-Alpha
 
-Démonstrateur EPSI de cyber-résilience et reprise autonome sur une plateforme de paiement fictive. Aucune donnée bancaire réelle ne doit être utilisée.
+Démonstrateur EPSI de cyber-résilience et de reprise autonome sur une plateforme de paiement fictive. Aucune donnée bancaire réelle ne doit être utilisée. Toutes les actions offensives restent limitées au réseau privé du groupe.
+
+La plateforme encaisse un incident (panne d'un service, attaque applicative) et retrouve un état utilisable **sans intervention humaine** : la reprise automatique est mesurée à environ 30 secondes et prouvée par une nouvelle transaction acceptée.
+
+## Sommaire
+
+1. [Architecture](#architecture)
+2. [Démarrage rapide](#démarrage-rapide)
+3. [Authentification Face ID](#authentification-face-id-webauthn)
+4. [Vérifier le système](#vérifier-le-système)
+5. [Scénarios d'attaque (PC Attaquant)](#scénarios-dattaque-pc-attaquant)
+6. [Démonstration de reprise autonome](#démonstration-de-reprise-autonome)
+7. [Observabilité et SOC](#observabilité-et-soc)
+8. [Assistant opérateur](#assistant-opérateur)
+9. [Test entre ordinateurs](#test-entre-ordinateurs)
+10. [Documentation](#documentation)
+11. [Arrêter la plateforme](#arrêter-la-plateforme)
+12. [Limites assumées](#limites-assumées)
+
+## Architecture
+
+| Domaine | Composants |
+|---|---|
+| Développement | API Node.js/Express, PostgreSQL, frontend React/Tailwind/Nginx, authentification WebAuthn, remediator |
+| Infrastructure | Docker Compose, Ansible, Prometheus, Grafana, Loki, Promtail, Alertmanager |
+| IA / Data | Isolation Forest (scikit-learn), assistant Ollama + LangChain + RAG |
+| Cybersécurité | WAF ModSecurity + OWASP CRS, HashiCorp Vault, durcissement des conteneurs, dashboard SOC |
+| Gouvernance | EBIOS RM, PCA/PRA, NIS2/DORA, runbook |
+
+Schémas et flux détaillés : [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+Chaîne de reprise : `Panne → Prometheus → Alertmanager → remediator → Ansible → healthcheck → /health ok`. Les alertes de **sécurité** n'entraînent aucun redémarrage : rétablir un service ne neutralise pas un attaquant.
 
 ## Démarrage rapide
 
 ### Prérequis
 
 - Git ;
-- Docker Desktop démarré ;
-- au moins 4 cœurs CPU, 16 Go de RAM et 50 Go libres recommandés.
+- Docker Desktop démarré (WSL 2 sous Windows) ;
+- au moins 4 cœurs CPU, 16 Go de RAM et 50 Go libres recommandés (l'assistant local utilise environ 3 à 4 Go de RAM).
 
-Cloner le dépôt :
+### 1. Cloner le dépôt
 
 ```bash
 git clone https://github.com/ilyaslahfaouti/RESILIENCE-ALPHA.git
 cd RESILIENCE-ALPHA
 ```
 
-Créer la configuration locale :
+### 2. Créer la configuration locale
 
 ```bash
 cp .env.example .env
 ```
 
-Modifier `.env` et remplacer les placeholders. Les deux tokens doivent être identiques. Pour un test entre ordinateurs, remplacer `192.168.137.1` par l'adresse IP privée du PC Hôte :
+Remplacer **toutes** les valeurs `replace-with-...` par des secrets longs et aléatoires. Génération d'un secret :
 
-```env
-POSTGRES_DB=resilience
-POSTGRES_USER=resilience
-POSTGRES_PASSWORD=un-secret-local
-PAYMENT_API_TOKEN=un-token-de-laboratoire
-VITE_API_TOKEN=un-token-de-laboratoire
-VITE_API_URL=http://192.168.137.1:3000
-GRAFANA_ADMIN_USER=admin
-GRAFANA_ADMIN_PASSWORD=un-secret-grafana
+```bash
+openssl rand -hex 24
 ```
 
-Ne jamais publier `.env`. Il est ignoré par Git. Si le volume PostgreSQL existe déjà, conserver le mot de passe utilisé lors de sa première initialisation.
+```powershell
+-join ((1..48) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+```
 
-Démarrer toute la plateforme :
+Variables obligatoires :
+
+| Variable | Rôle |
+|---|---|
+| `POSTGRES_PASSWORD` | Mot de passe de la base (injecté dans Vault) |
+| `PAYMENT_API_TOKEN` | Jeton de laboratoire : scripts de test et code d'enrôlement Face ID |
+| `SESSION_SECRET` | Signature des sessions Face ID |
+| `VAULT_ROOT_TOKEN`, `VAULT_APP_TOKEN` | Jetons Vault (administration du coffre, lecture seule pour l'API) |
+| `REMEDIATOR_TOKEN` | Secret qu'Alertmanager présente au remediator |
+| `GRAFANA_ADMIN_PASSWORD` | Mot de passe Grafana |
+| `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGIN` | Domaine et URL exacts utilisés dans le navigateur pour Face ID |
+
+Ne jamais publier `.env` (ignoré par Git). Si le volume PostgreSQL ou Grafana existe déjà, **conserver les mots de passe utilisés à leur première initialisation** : ces services ne les relisent pas ensuite.
+
+### 3. Démarrer toute la plateforme
 
 ```bash
 docker compose up -d --build
-```
-
-## Test entre trois ordinateurs
-
-Le PC Hôte exécute Docker. Le PC Attaquant et le PC IA doivent être connectés au même réseau privé du groupe. Aucun test ne doit viser le réseau du campus ou Internet.
-
-Sur le PC Hôte, trouver l'adresse IP privée :
-
-```bash
-# macOS
-ipconfig getifaddr en0
-
-# Windows PowerShell
-ipconfig
-```
-
-Renseigner cette adresse dans `.env`, puis reconstruire le frontend :
-
-```env
-VITE_API_URL=http://ADRESSE_IP_DU_PC_HOTE:3000
-```
-
-```bash
-docker compose up -d --build frontend
-```
-
-Depuis le PC Attaquant, tester l'API du laboratoire :
-
-```bash
-curl http://ADRESSE_IP_DU_PC_HOTE:3000/health
-```
-
-Le PC IA peut accéder uniquement aux interfaces publiées nécessaires : frontend `8080`, API `3000`, Prometheus `9090`, Grafana `3001` et Alertmanager `9093`. PostgreSQL, Loki et le socket Docker ne sont pas exposés.
-
-Pour lancer le burst contrôlé depuis le PC Attaquant :
-
-```bash
-LAB_HOST_IP=ADRESSE_IP_DU_PC_HOTE \
-  DURATION_SECONDS=10 CONCURRENCY=2 \
-  bash security/controlled_payment_burst.sh
-```
-
-Le script n'accepte que `localhost`, `127.0.0.1` ou l'adresse fournie par `LAB_HOST_IP`. En cas d'échec, vérifier le même réseau privé, le pare-feu du PC Hôte, Docker Desktop et l'absence de VPN isolant les machines.
-
-### Recette depuis Windows PowerShell
-
-Remplacer `192.168.137.23` par l'adresse IP actuelle du PC Hôte :
-
-```powershell
-$hostIp = "192.168.137.23"
-ping $hostIp
-Test-NetConnection $hostIp -Port 8080
-Test-NetConnection $hostIp -Port 3000
-curl.exe "http://${hostIp}:3000/health"
-```
-
-Ouvrir le dashboard dans le navigateur Windows :
-
-```text
-http://192.168.137.23:8080
-```
-
-Pour simuler le trafic malveillant contrôlé depuis le PC Attaquant, uniquement contre l'API fictive du PC Hôte :
-
-```powershell
-$hostIp = "192.168.137.23"
-$url = "http://${hostIp}:3000/payments"
-$body = '{"recipient":"lab-attack","amount":0}'
-
-1..300 | ForEach-Object {
-  try {
-    Invoke-WebRequest `
-      -Uri $url `
-      -Method POST `
-      -ContentType "application/json" `
-      -Body $body `
-      -TimeoutSec 2 `
-      -UseBasicParsing | Out-Null
-  } catch {}
-}
-
-Write-Host "Burst de laboratoire termine"
-```
-
-Ce scénario produit des requêtes de paiement invalides et observables. Il ne s'agit pas d'une injection SQL : l'API utilise des requêtes PostgreSQL paramétrées.
-
-Sur le Mac Hôte, observer les preuves pendant le test :
-
-```bash
-cd /Users/mac/alpha/RESILIENCE-ALPHA
-docker compose logs -f payment-api remediator
-```
-
-Dans un autre terminal Mac :
-
-```bash
-curl -s http://localhost:3000/metrics | grep payment_api
-curl -s http://localhost:9090/api/v1/alerts
-```
-
-Les alertes attendues sont `PaymentInvalidRequestBurst` et/ou `PaymentMlAnomalyDetected`.
-
-Pour démontrer ensuite la reprise autonome, arrêter uniquement l'API sur le Mac :
-
-```bash
-docker stop resilience-payment-api
-```
-
-Depuis Windows, attendre son retour :
-
-```powershell
-curl.exe --retry 12 --retry-delay 2 "http://192.168.137.23:3000/health"
-```
-
-Le résultat final attendu est un statut `ok` avec `database: ok`. Effectuer ensuite un nouveau paiement depuis le dashboard pour prouver la reprise métier.
-
-Vérifier l'état des services :
-
-```bash
 docker compose ps
 ```
 
-Les services doivent être `healthy` ou `running`.
+Au premier démarrage, l'assistant télécharge ses modèles locaux (environ 2 Go, quelques minutes) ; le reste de la plateforme est utilisable immédiatement. Les services doivent être `healthy` ou `running`.
 
-Interfaces locales :
+### Interfaces
 
-- Frontend : http://localhost:8080
-- API : http://localhost:3000/health
-- Prometheus : http://localhost:9090
-- Alertmanager : http://localhost:9093
-- Grafana : http://localhost:3001
+| Interface | URL |
+|---|---|
+| Dashboard de paiement | http://localhost:8080 |
+| API (derrière le WAF) | http://localhost:3000/health |
+| Grafana | http://localhost:3001 |
+| Prometheus | http://localhost:9090 |
+| Alertmanager | http://localhost:9093 |
 
-## Captures Grafana pour la vidéo
+PostgreSQL, Vault, Loki, l'assistant, Ollama, le remediator et les proxys Docker ne sont **pas** exposés au réseau.
 
-Grafana est provisionné automatiquement avec les sources Prometheus et Loki et le dashboard :
+## Authentification Face ID (WebAuthn)
 
-```text
-Resilience Alpha - Incident & Recovery
-```
+Le dashboard est protégé par une passkey de plateforme : Face ID (iPhone, Mac), Touch ID, Windows Hello ou déverrouillage Android. La biométrie ne quitte jamais l'appareil ; l'API ne stocke qu'une clé publique.
 
-Ouvrir Grafana :
+1. Ouvrir http://localhost:8080, puis **Première connexion ? Enrôler cet appareil**.
+2. Saisir un nom d'utilisateur et le code d'enrôlement (la valeur de `PAYMENT_API_TOKEN`), puis valider avec la biométrie ou le code de l'appareil. Choisir **Windows Hello** (ou l'authentificateur de l'appareil), pas un gestionnaire de mots de passe synchronisé.
+3. Les connexions suivantes utilisent **Se connecter avec Face ID**. La session dure 15 minutes.
 
-```text
-http://ADRESSE_IP_DU_PC_HOTE:3001
-```
+Contraintes :
 
-Sur le PC Hôte, l'URL locale est `http://localhost:3001`. Se connecter avec les identifiants `GRAFANA_ADMIN_USER` et `GRAFANA_ADMIN_PASSWORD` définis dans `.env`, puis ouvrir le dossier **Resilience Alpha** et le dashboard **Resilience Alpha - Incident & Recovery**.
+- WebAuthn exige HTTPS ou `localhost`. Depuis un autre PC en `http://192.168.x.x`, la connexion biométrique est indisponible ; servir le frontend en HTTPS avec un certificat de confiance et un nom de domaine (un RP ID ne peut pas être une adresse IP).
+- `WEBAUTHN_RP_ID` (nom d'hôte, sans port) et `WEBAUTHN_ORIGIN` (URL exacte du frontend) doivent correspondre à l'adresse du navigateur.
+- `PAYMENT_API_TOKEN` reste accepté par l'API pour les scripts et les `curl`.
 
-Le dashboard affiche :
+L'interface propose trois thèmes (clair, sombre, automatique) via le sélecteur en haut à droite.
 
-- disponibilité de l'API paiement (`up`) ;
-- taux de requêtes rejetées ;
-- état de l'anomalie ML ;
-- logs de `resilience-payment-api` via Loki.
+## Vérifier le système
 
-### Séquence de captures recommandée
-
-1. **Avant incident** : afficher le dashboard avec API disponible, anomalie ML à `0` et logs normaux.
-2. **Pendant le burst Windows** : lancer la recette PowerShell ci-dessus, régler la période Grafana sur les quinze dernières minutes et capturer la hausse des rejets ainsi que les logs.
-3. **Pendant la panne** : sur le Mac, exécuter `docker stop resilience-payment-api` et capturer l'API à `0` dans le panneau de disponibilité.
-4. **Remédiation** : capturer les logs `remediator` avec `returncode: 0` et l'API revenue à `1`.
-5. **Après reprise** : exécuter un paiement depuis le dashboard et capturer la transaction acceptée.
-
-Pour actualiser les panneaux pendant la démonstration, choisir une actualisation automatique de cinq secondes dans Grafana. Le dashboard est également accessible depuis Windows avec l'adresse LAN du PC Hôte.
-
-Identifiants Grafana : `GRAFANA_ADMIN_USER` et `GRAFANA_ADMIN_PASSWORD` définis dans `.env`.
-
-Le frontend utilise `VITE_API_TOKEN` pour appeler l'API. Les routes métier exigent le même token dans `PAYMENT_API_TOKEN`.
-
-Vérifier l'API :
+### Tests automatisés
 
 ```bash
-curl http://localhost:3000/health
+cd backend && npm install && npm test          # authentification WebAuthn, secrets (12 tests)
 ```
 
-Résultat attendu : un statut `ok` avec `database: ok`.
+```bash
+cd ai-detector && pip install -r requirements.txt && python -m unittest discover -s tests -v   # détecteur ML
+```
 
-## Effectuer un paiement fictif
+La CI GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) exécute ces tests, le build du frontend et la validation du compose.
 
-Depuis le dashboard, ouvrir http://localhost:8080, saisir un destinataire et un montant, puis cliquer sur **Valider le paiement**.
+### Recette de bout en bout (PC Hôte)
 
-Le paiement est écrit dans PostgreSQL uniquement après validation par l'API. Pour tester en ligne de commande :
+```powershell
+.\security\e2e_test.ps1                    # contrôles de sécurité + pannes API et PostgreSQL
+.\security\e2e_test.ps1 -SkipDisruptive    # sans provoquer de panne
+```
+
+Le script vérifie l'authentification, le blocage WAF, le durcissement des conteneurs, l'isolation du remediator, puis mesure la reprise autonome après l'arrêt de l'API et de PostgreSQL. Résultats consignés dans [docs/TESTS.md](docs/TESTS.md).
+
+### Paiement manuel
 
 ```bash
 TOKEN=$(grep '^PAYMENT_API_TOKEN=' .env | cut -d= -f2-)
-
-curl -X POST http://localhost:3000/payments \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"recipient":"oussama","amount":1000}'
+curl -X POST http://localhost:3000/payments -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"recipient":"oussama","amount":1000}'
+curl http://localhost:3000/payments -H "Authorization: Bearer $TOKEN"
 ```
 
-Lire les transactions persistées :
+Une requête sans jeton répond `401`. Documentation de l'API : [docs/openapi.yaml](docs/openapi.yaml).
 
-```bash
-curl http://localhost:3000/payments \
-  -H "Authorization: Bearer $TOKEN"
+## Scénarios d'attaque (PC Attaquant)
+
+Le PC Attaquant doit être sur le **même réseau privé que le PC Hôte** (point d'accès mobile Windows, `192.168.137.1`), jamais sur le réseau du campus.
+
+Sur le PC Hôte, autoriser les ports de la plateforme pour ce seul réseau (PowerShell administrateur) :
+
+```powershell
+New-NetFirewallRule -DisplayName "Resilience-Lab" -Direction Inbound -Protocol TCP -LocalPort 8080,3000,9090,3001,9093 -RemoteAddress 192.168.137.0/24 -Action Allow -Profile Any
 ```
 
-Une requête sans token doit répondre `401`.
+Sur le PC Attaquant :
+
+```powershell
+$hostIp = "192.168.137.1"
+Test-NetConnection $hostIp -Port 3000
+curl.exe "http://${hostIp}:3000/health"
+
+.\security\attack_from_attacker_pc.ps1 -HostIp $hostIp -Scenario burst -Count 1000
+.\security\attack_from_attacker_pc.ps1 -HostIp $hostIp -Scenario injection
+.\security\attack_from_attacker_pc.ps1 -HostIp $hostIp -Scenario auth
+```
+
+Le script refuse toute adresse non privée. Équivalent bash : `LAB_HOST_IP=192.168.137.1 DURATION_SECONDS=20 CONCURRENCY=6 bash security/controlled_payment_burst.sh`.
+
+| Scénario | Effet observable | Détection / réponse |
+|---|---|---|
+| `burst` : rafale de paiements invalides | Hausse des rejets, anomalie ML | `PaymentInvalidRequestBurst`, `PaymentMlAnomalyDetected` (sécurité, pas de redémarrage) |
+| `injection` : SQL et script | Réponse 403 | Blocage par le WAF, journal ModSecurity dans le dashboard SOC |
+| `auth` : connexions biométriques invalides | Réponses 401 | `PaymentBiometricAuthFailures` |
+
+Ces scénarios produisent des requêtes observables ; l'API n'est pas vulnérable à l'injection SQL (requêtes paramétrées), et le WAF bloque en amont les motifs connus.
 
 ## Démonstration de reprise autonome
 
-### 1. Vérifier une transaction avant incident
+1. Vérifier l'état initial : `curl http://localhost:3000/health` et un paiement depuis le dashboard.
+2. Injecter une panne contrôlée, strictement limitée aux conteneurs du projet :
+   ```bash
+   docker stop resilience-payment-api      # ou : docker stop resilience-postgres
+   ```
+   Les services utilisent `restart: "no"` pour l'API : la reprise est assurée par le remediator, pas par Docker.
+3. Observer : le dashboard affiche « Panne détectée » puis « Service rétabli, reprise automatique en N s » ; Grafana montre l'API à 0 puis à 1 ; `docker compose logs -f remediator` affiche `returncode: 0`.
+4. Prouver la reprise métier : `/health` répond `ok` avec `database: ok`, **et** un nouveau paiement est accepté.
 
-```bash
-TOKEN=$(grep '^PAYMENT_API_TOKEN=' .env | cut -d= -f2-)
-curl -X POST http://localhost:3000/payments \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"recipient":"before-incident","amount":10}'
-```
+La reprise n'est considérée comme réussie que si ces deux conditions sont réunies.
 
-### 2. Injecter une panne contrôlée
+## Observabilité et SOC
 
-```bash
-docker stop resilience-payment-api
-```
+Grafana est provisionné avec Prometheus, Loki et deux dashboards (dossier **Resilience Alpha**) :
 
-Cette commande est strictement limitée au conteneur fictif du projet. Le service utilise `restart: no` afin que la reprise soit effectuée par le remediator et non par Docker.
+- **Resilience Alpha - Incident & Recovery** : disponibilité de l'API, taux de rejets, anomalie ML, logs.
+- **Resilience Alpha - SOC** : alertes de sécurité et de disponibilité, authentification, blocages WAF, détection ML, actions du remediator.
 
-### 3. Observer la détection et la remédiation
+Connexion avec `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` (valeur de la première initialisation du volume). Régler l'actualisation sur 5 s pour la démonstration.
 
-La chaîne automatique est :
+Séquence de captures recommandée : avant incident, pendant le burst, pendant la panne (API à 0), remédiation (`returncode: 0`, API à 1), après reprise (paiement accepté).
 
-```text
-Panne API → Prometheus → Alertmanager → remediator → Ansible → healthcheck healthy
-```
+## Assistant opérateur
 
-Observer les interfaces :
+Un assistant local (Ollama + LangChain, recherche documentaire RAG) répond aux questions des opérateurs à partir de [docs/RUNBOOK-INCIDENT.md](docs/RUNBOOK-INCIDENT.md) et de la documentation. Modèle par défaut : `qwen2.5:1.5b` (moins de 8 milliards de paramètres) ; embeddings `nomic-embed-text`. Il est accessible depuis le dashboard, via un relais authentifié de l'API.
 
-- Prometheus : http://localhost:9090, alerte `PaymentApiDown` ;
-- Alertmanager : http://localhost:9093 ;
-- Grafana : http://localhost:3001 ;
-- logs du remediator :
+Il n'exécute **aucune action** : lecture seule, sans accès Docker ni base de données, sur le réseau interne uniquement. Il se distingue ainsi de l'automate de remédiation.
 
-```bash
-docker compose logs -f remediator
-```
+## Test entre ordinateurs
 
-### 4. Vérifier le retour du service
+Le PC Hôte exécute Docker. Le PC Attaquant (et un éventuel PC IA) sont sur le même réseau privé du groupe. Aucun test ne vise le réseau du campus ou Internet.
 
-4. Vérifier le retour métier :
+1. Sur le PC Hôte, activer le point d'accès mobile Windows, relever l'adresse IP (`ipconfig`, en général `192.168.137.1`) et ouvrir les ports (commande de pare-feu ci-dessus).
+2. Renseigner `VITE_API_URL=http://ADRESSE_IP_DU_PC_HOTE:3000` dans `.env`, puis reconstruire : `docker compose up -d --build frontend`.
+3. Depuis le PC Attaquant : vérifier `/health`, puis lancer les scénarios ci-dessus.
 
-```bash
-curl http://localhost:3000/health
-curl -X POST http://localhost:3000/payments \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"recipient":"after-recovery","amount":1}'
-```
+Le PC IA ne doit accéder qu'aux interfaces nécessaires : frontend 8080, API 3000, Prometheus 9090, Grafana 3001, Alertmanager 9093. En cas d'échec : même réseau privé, pare-feu du PC Hôte, Docker Desktop démarré, absence de VPN isolant les machines.
 
-La reprise n'est considérée comme réussie que si le healthcheck est `healthy` et que cette nouvelle transaction est acceptée.
+## Documentation
 
-## Tester la détection d'anomalie
-
-Le script d'attaque applicative contrôlée est `security/controlled_payment_burst.sh`. Il refuse toute cible autre que l'API locale :
-
-```bash
-DURATION_SECONDS=10 CONCURRENCY=2 \
-  bash security/controlled_payment_burst.sh
-```
-
-Le burst alimente les métriques `payment_api_rejected_requests_total` et le détecteur Isolation Forest. Le signal ML est visible sur le port interne du service et l'alerte `PaymentMlAnomalyDetected` est exposée par Prometheus.
+| Document | Contenu |
+|---|---|
+| [Architecture](docs/ARCHITECTURE.md) | Composants, réseaux, flux, décisions |
+| [Sécurité et gouvernance](docs/SECURITY-GOVERNANCE.md) | Synthèse sécurité, accès, secrets, WAF |
+| [EBIOS RM](docs/EBIOS-RM.md) | Analyse de risques en cinq ateliers |
+| [PCA / PRA](docs/PCA-PRA.md) | Objectifs RTO/RPO, scénarios couverts, risques résiduels |
+| [NIS2 / DORA](docs/NIS2-DORA.md) | Exigences démontrées, hors de portée, arbitrages |
+| [Runbook opérateur](docs/RUNBOOK-INCIDENT.md) | Procédures par alerte (source de l'assistant) |
+| [Résultats des essais](docs/TESTS.md) | Mesures de reprise et recette |
+| [API](docs/openapi.yaml) | Contrat OpenAPI |
+| [Détection ML](ai-detector/README.md) | Données, modèle, limites |
+| [Remédiation Ansible](ansible/README.md) | Playbooks et périmètre |
+| [Clip Chrono](docs/CLIP-CHRONO.md) | Scénario de la vidéo de 60 secondes |
+| [Guide de démonstration](docs/GUIDE-DEMO.md) | Préparation, déroulé minuté, tests, dépannage, questions du jury |
+| [HTTPS et Face ID](docs/HTTPS-FACE-ID.md) | Face ID depuis un autre poste |
 
 ## Arrêter la plateforme
 
-Arrêter les conteneurs en conservant les données :
+Conserver les données :
 
 ```bash
 docker compose down
 ```
 
-Arrêter les conteneurs et supprimer les volumes, y compris les transactions PostgreSQL :
+Supprimer aussi les volumes (transactions, utilisateurs Face ID, modèles Ollama) — réinitialisation complète du laboratoire uniquement :
 
 ```bash
 docker compose down -v
 ```
 
-Utiliser cette dernière commande uniquement pour réinitialiser complètement le laboratoire.
-
-## Composants
-
-- Node.js/Express : API métier et métriques Prometheus
-- PostgreSQL : persistance des transactions fictives
-- React/Tailwind/Nginx : dashboard et filtrage frontal léger
-- Prometheus/Grafana/Loki/Promtail : métriques, visualisation et journaux
-- Isolation Forest/scikit-learn : détection d’anomalies de trafic
-- Alertmanager + Ansible + Docker API : remédiation autonome
-
-## Documentation
-
-- [Sécurité et gouvernance](docs/SECURITY-GOVERNANCE.md)
-- [Détection ML](ai-detector/README.md)
-- [Remédiation Ansible](ansible/README.md)
-- [Variables sans secret](.env.example)
-
 ## Limites assumées
 
-Ce prototype ne constitue pas une certification NIS2/DORA ni un système bancaire. Vault/SOPS, un WAF industriel ModSecurity/OWASP CRS, Ollama/LangChain/RAG, l’authentification centralisée et l’exécution depuis un PC Attaquant distinct doivent être ajoutés pour une couverture complète du cahier des charges.
+Ce prototype ne constitue pas une certification NIS2/DORA ni un système bancaire.
+
+- Vault tourne en mode développement (stockage en mémoire, secrets réinjectés à chaque démarrage) ; la production exigerait un stockage persistant, la rotation et l'audit.
+- Le proxy Docker restreint les routes accessibles au remediator mais ne filtre pas le contenu des requêtes.
+- Le WAF est réglé en niveau de paranoïa 1 ; une limitation de débit par source reste à ajouter.
+- Le modèle ML s'appuie sur deux signaux (taux de requêtes et de rejets) ; faux positifs possibles.
+- Une seule machine hôte : pas de réplication ni de bascule entre sites.
+- Face ID depuis un autre poste nécessite HTTPS et un nom de domaine.

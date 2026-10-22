@@ -1,8 +1,8 @@
 FROM node:22-alpine AS build
 
 WORKDIR /app
-ARG VITE_API_TOKEN
-ENV VITE_API_TOKEN=$VITE_API_TOKEN
+ARG VITE_API_URL
+ENV VITE_API_URL=$VITE_API_URL
 COPY package*.json ./
 RUN npm install
 COPY . .

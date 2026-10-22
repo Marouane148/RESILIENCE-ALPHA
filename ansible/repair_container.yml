@@ -1,0 +1,63 @@
+---
+# Tâches communes de réparation d'un conteneur du périmètre (variable : repair_target).
+- name: Inspect {{ repair_target }} through the local Docker API
+  community.docker.docker_container_info:
+    name: "{{ repair_target }}"
+    docker_host: "{{ docker_host }}"
+  register: target_info
+  failed_when: false
+
+- name: Stop when the Docker API cannot be reached
+  ansible.builtin.fail:
+    msg: >-
+      Impossible de joindre l'API Docker via {{ docker_host }}.
+      Vérifiez que Docker est démarré et que le socket est monté dans le remediator.
+  when: target_info.failed | default(false) | bool
+
+- name: Stop when {{ repair_target }} does not exist
+  ansible.builtin.fail:
+    msg: "Le conteneur {{ repair_target }} est introuvable ; démarrez la stack avec docker compose."
+  when: not (target_info.exists | default(false) | bool)
+
+# Un conteneur en cours de démarrage (health = starting) est attendu, jamais redémarré une seconde fois.
+- name: Evaluate whether {{ repair_target }} needs a repair
+  ansible.builtin.set_fact:
+    needs_repair: >-
+      {{ target_info.container.State.Status | default('') != 'running' or
+         target_info.container.State.Health.Status | default('') == 'unhealthy' }}
+    still_starting: >-
+      {{ target_info.container.State.Status | default('') == 'running' and
+         target_info.container.State.Health.Status | default('') == 'starting' }}
+
+- name: Remember that this run repaired something
+  ansible.builtin.set_fact:
+    any_repair: true
+  when: needs_repair | bool
+
+- name: Report the detected state of {{ repair_target }}
+  ansible.builtin.debug:
+    msg:
+      container: "{{ repair_target }}"
+      status: "{{ target_info.container.State.Status | default('unknown') }}"
+      health: "{{ target_info.container.State.Health.Status | default('none') }}"
+      repair_needed: "{{ needs_repair }}"
+      still_starting: "{{ still_starting }}"
+
+# `docker restart` ne requiert que les appels sur les conteneurs (le module Ansible inspecterait aussi les images, refusées par le proxy).
+- name: Restart {{ repair_target }} when it is stopped or unhealthy
+  ansible.builtin.command:
+    cmd: "docker restart {{ repair_target }}"
+  changed_when: true
+  when: needs_repair | bool
+
+# L'attente s'interrompt si le conteneur cesse de tourner (nouvelle panne pendant la reprise) : le passage suivant le répare aussitôt.
+- name: Wait for {{ repair_target }} to become healthy
+  ansible.builtin.command:
+    cmd: "docker inspect --format={% raw %}'{{.State.Status}}/{{.State.Health.Status}}'{% endraw %} {{ repair_target }}"
+  register: repaired_health
+  changed_when: false
+  until: (repaired_health.stdout | trim == 'running/healthy') or not (repaired_health.stdout | trim is match('running/'))
+  failed_when: repaired_health.stdout | trim != 'running/healthy'
+  retries: "{{ recovery_retries }}"
+  delay: "{{ recovery_delay_seconds }}"
+  when: (needs_repair | bool) or (still_starting | bool)

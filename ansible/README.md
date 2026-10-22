@@ -1,55 +1,50 @@
-# Remédiation automatique du paiement
+# Remédiation automatique
 
-Ce playbook surveille l'état des conteneurs Docker du service `payment-api` et applique une remédiation sans intervention humaine :
+Le remediator reçoit les alertes de **disponibilité** d'Alertmanager et exécute le playbook Ansible [remediate_payment.yml](remediate_payment.yml). Aucune intervention humaine n'est nécessaire.
 
-- découverte via l'API Docker locale (`/var/run/docker.sock`) ;
-- identification des répliques arrêtées, absentes ou dont le healthcheck n'est pas `healthy` ;
-- conservation des répliques saines lorsqu'elles existent ;
-- redémarrage automatique des répliques anormales ;
-- attente du retour à l'état `healthy`, avec échec explicite si le service ne revient pas.
+## Chaîne de reprise
 
-## Prérequis
+`Panne → Prometheus (scrape 5 s) → alerte (5 s) → Alertmanager → remediator → Ansible → healthcheck → /health ok`
 
-- Docker démarré et stack Resilience-Alpha lancée depuis la racine du projet ;
-- Ansible installé ;
-- collection `community.docker` installée ;
-- utilisateur courant autorisé à accéder au socket Docker local.
+1. Alertmanager route uniquement les alertes de catégorie `availability` (`PaymentApiDown`, `PaymentDatabaseDown`) vers le remediator, avec un jeton Bearer. Les alertes de sécurité ne déclenchent aucune action.
+2. Le remediator vérifie le jeton (sinon `401`), répond `202` immédiatement puis lance le playbook en arrière-plan. Un verrou garantit un seul playbook à la fois ; les notifications répétées sont ignorées (`remediation_skipped`).
+3. Le playbook répare dans l'ordre de dépendance : `resilience-postgres`, puis `resilience-payment-api`. Pour chaque conteneur ([repair_container.yml](repair_container.yml)) : inspection via l'API Docker, redémarrage si arrêté ou non `healthy`, attente de l'état `healthy`.
+4. Vérification métier : `GET http://payment-api:3000/health` doit répondre 200 avec `database: ok`. Sinon le playbook échoue (`returncode` différent de 0, sortie dans les logs).
 
-Installer la collection :
+Les conteneurs déjà sains sont laissés intacts. La reprise mesurée est d'environ 30 secondes pour l'API.
+
+## Périmètre et privilèges
+
+- Seuls deux conteneurs sont ciblés, nommés explicitement dans le playbook.
+- Le remediator n'a **pas** le socket Docker : il utilise `DOCKER_HOST=tcp://docker-proxy-ctl:2375`, un proxy qui n'autorise que les appels sur les conteneurs (inspection, démarrage, redémarrage). `exec`, images, volumes, réseaux, services et suppression sont refusés.
+- Le port du remediator (8081) n'est pas publié, et son accès exige `REMEDIATOR_TOKEN`.
+- Limite : le proxy ne filtre pas le contenu des requêtes ; une requête de création de conteneur reste possible. En production, utiliser un proxy filtrant ou un orchestrateur avec RBAC.
+
+## Exécution manuelle
+
+Depuis la racine du projet, avec Ansible et la collection Docker installés :
 
 ```bash
 ansible-galaxy collection install -r ansible/requirements.yml
-```
-
-## Exécution
-
-Depuis la racine `RESILIENCE-ALPHA` :
-
-```bash
 ansible-playbook -i localhost, ansible/remediate_payment.yml
 ```
 
-Le playbook utilise `DOCKER_HOST` s'il est défini. Pour cibler explicitement un autre endpoint Docker :
+Dans la plateforme, le playbook s'exécute dans le conteneur `resilience-remediator` ; pour le lancer à la main :
 
 ```bash
-DOCKER_HOST=unix:///var/run/docker.sock \\
-  ansible-playbook -i localhost, ansible/remediate_payment.yml
+docker exec resilience-remediator ansible-playbook -i localhost, /workspace/ansible/remediate_payment.yml
 ```
 
-L'API Docker doit exposer le label Compose `com.docker.compose.service=payment-api`, fourni automatiquement par le `docker-compose.yml` du projet.
-
-## Intégration avec une alerte
-
-Le playbook peut être appelé par Alertmanager, un ordonnanceur ou un pipeline CI lorsqu'une alerte Prometheus/Loki signale l'indisponibilité du paiement. Il est volontairement idempotent : une exécution sur une réplique déjà saine ne redémarre rien.
-
-Pour effectuer uniquement le contrôle Ansible sans action distante :
+## Vérifier
 
 ```bash
-ansible-playbook --check -i localhost, ansible/remediate_payment.yml
+docker stop resilience-payment-api        # ou resilience-postgres
+docker compose logs -f remediator         # {"event": "remediation", "returncode": 0}
+curl http://localhost:3000/health         # {"status":"ok","database":"ok"}
 ```
 
-## Déclenchement automatique
+Un appel sans jeton est refusé :
 
-Prometheus envoie l'alerte `PaymentInvalidRequestBurst` à Alertmanager. Alertmanager appelle ensuite le service `remediator`, qui exécute automatiquement `remediate_payment.yml` via l'API Docker locale.
-
-Le remediator est volontairement limité au label Compose `payment-api` ; il ne peut pas redémarrer un autre service avec ce playbook.
+```bash
+docker exec resilience-payment-api wget -S -O- --post-data='{}' http://remediator:8081/   # HTTP 401
+```

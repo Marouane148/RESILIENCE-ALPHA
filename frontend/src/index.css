@@ -1,17 +1,132 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap');
 
 @import 'tailwindcss';
 
+/* Jetons de design : clair par défaut, sombre selon le système ou le choix explicite de l'utilisateur. */
 :root {
-  font-family: 'DM Sans', sans-serif;
+  --bg: #f4f5f8;
+  --surface: #ffffff;
+  --surface-2: #eff1f5;
+  --line: #e2e5eb;
+  --ink: #0c1120;
+  --muted: #566074;
+  --subtle: #6b7587;
+  --brand: #047857;
+  --brand-hover: #065f46;
+  --brand-ink: #ffffff;
+  --brand-soft: #e5f5ee;
+  --ok: #047857;
+  --ok-soft: #e5f5ee;
+  --bad: #b91c1c;
+  --bad-soft: #fdeded;
+  --warn: #b45309;
+  --warn-soft: #fdf3e0;
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.05), 0 12px 28px -16px rgb(16 24 40 / 0.16);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg: #070a12;
+    --surface: #0e1320;
+    --surface-2: #151b2c;
+    --line: #202840;
+    --ink: #eef1f8;
+    --muted: #9ba5ba;
+    --subtle: #8792a8;
+    --brand: #34d399;
+    --brand-hover: #6ee7b7;
+    --brand-ink: #04130d;
+    --brand-soft: rgb(52 211 153 / 0.12);
+    --ok: #34d399;
+    --ok-soft: rgb(52 211 153 / 0.12);
+    --bad: #f87171;
+    --bad-soft: rgb(248 113 113 / 0.13);
+    --warn: #fbbf24;
+    --warn-soft: rgb(251 191 36 / 0.13);
+    --shadow-card: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 16px 36px -20px rgb(0 0 0 / 0.7);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #070a12;
+  --surface: #0e1320;
+  --surface-2: #151b2c;
+  --line: #202840;
+  --ink: #eef1f8;
+  --muted: #9ba5ba;
+  --subtle: #8792a8;
+  --brand: #34d399;
+  --brand-hover: #6ee7b7;
+  --brand-ink: #04130d;
+  --brand-soft: rgb(52 211 153 / 0.12);
+  --ok: #34d399;
+  --ok-soft: rgb(52 211 153 / 0.12);
+  --bad: #f87171;
+  --bad-soft: rgb(248 113 113 / 0.13);
+  --warn: #fbbf24;
+  --warn-soft: rgb(251 191 36 / 0.13);
+  --shadow-card: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 16px 36px -20px rgb(0 0 0 / 0.7);
   color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-soft: var(--brand-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --shadow-card: var(--shadow-card);
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  background: var(--bg);
+}
+
 body {
   margin: 0;
   min-width: 320px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

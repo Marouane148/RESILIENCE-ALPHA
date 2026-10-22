@@ -1,10 +1,11 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import PaymentDashboard from './components/PaymentDashboard';
+import './theme';
+import AuthGate from './components/AuthGate';
 import './index.css';
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <PaymentDashboard />
+    <AuthGate />
   </StrictMode>,
 );

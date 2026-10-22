@@ -1,0 +1,267 @@
+openapi: 3.0.3
+info:
+  title: Resilience-Alpha - API de paiement fictive
+  version: 1.0.0
+  description: >-
+    API de démonstration d'une plateforme de paiement fictive. Aucune donnée bancaire réelle.
+    Toutes les routes métier exigent une session Face ID (WebAuthn) ou le jeton de laboratoire.
+    Le trafic entrant traverse le WAF (ModSecurity + OWASP CRS) publié sur le port 3000.
+servers:
+  - url: http://localhost:3000
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: État du service et de la base de données
+      security: []
+      responses:
+        '200':
+          description: Service opérationnel
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: Service dégradé (base injoignable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /metrics:
+    get:
+      summary: Métriques au format Prometheus
+      security: []
+      responses:
+        '200':
+          description: Texte Prometheus (requêtes, rejets, paiements, base, événements d'authentification)
+          content:
+            text/plain:
+              schema:
+                type: string
+  /payments:
+    post:
+      summary: Créer un paiement fictif
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentRequest'
+      responses:
+        '201':
+          description: Paiement accepté et enregistré
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          description: Charge utile invalide (destinataire absent ou montant non positif)
+        '401':
+          description: Authentification requise
+        '503':
+          description: Stockage indisponible
+    get:
+      summary: Lire les 50 dernières transactions
+      responses:
+        '200':
+          description: Liste des transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Payment'
+        '401':
+          description: Authentification requise
+        '503':
+          description: Stockage indisponible
+  /auth/register/options:
+    post:
+      summary: Démarrer l'enrôlement d'une passkey de plateforme
+      description: Réservé au porteur du jeton de laboratoire ou d'une session ouverte.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties:
+                username:
+                  type: string
+                  minLength: 3
+                  maxLength: 64
+      responses:
+        '200':
+          description: Options WebAuthn et identifiant de challenge (validité 5 minutes)
+        '400':
+          description: Nom d'utilisateur invalide
+        '401':
+          description: Authentification requise
+  /auth/register/verify:
+    post:
+      summary: Terminer l'enrôlement et ouvrir une session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challengeId, response]
+              properties:
+                challengeId:
+                  type: string
+                response:
+                  type: object
+      responses:
+        '201':
+          description: Passkey enregistrée, session émise
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          description: Challenge expiré ou attestation invalide
+        '401':
+          description: Authentification requise
+  /auth/login/options:
+    post:
+      summary: Démarrer une connexion par passkey (sans identifiant)
+      security: []
+      responses:
+        '200':
+          description: Options WebAuthn avec vérification utilisateur obligatoire et identifiant de challenge
+  /auth/login/verify:
+    post:
+      summary: Vérifier l'assertion biométrique et ouvrir une session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challengeId, response]
+              properties:
+                challengeId:
+                  type: string
+                response:
+                  type: object
+      responses:
+        '200':
+          description: Session émise (15 minutes)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '401':
+          description: Assertion refusée (challenge rejoué, clé inconnue, compteur non croissant, vérification utilisateur absente)
+  /auth/session:
+    get:
+      summary: Valider une session en cours
+      responses:
+        '200':
+          description: Session valide
+        '401':
+          description: Session absente, expirée ou falsifiée
+  /assistant/ask:
+    post:
+      summary: Poser une question à l'assistant opérateur (RAG sur les procédures)
+      description: Relais authentifié vers un service interne sans privilège. Une seule question à la fois.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question:
+                  type: string
+                  minLength: 3
+                  maxLength: 500
+      responses:
+        '200':
+          description: Réponse et sources documentaires
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  answer:
+                    type: string
+                  model:
+                    type: string
+                  sources:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        source:
+                          type: string
+                        excerpt:
+                          type: string
+        '400':
+          description: Question invalide
+        '429':
+          description: Assistant occupé
+        '503':
+          description: Assistant indisponible ou modèles en cours de téléchargement
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Session Face ID émise par /auth/login/verify ou jeton de laboratoire (PAYMENT_API_TOKEN)
+  schemas:
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        service:
+          type: string
+        database:
+          type: string
+          enum: [ok, unavailable]
+    PaymentRequest:
+      type: object
+      required: [recipient, amount]
+      properties:
+        recipient:
+          type: string
+          maxLength: 120
+        amount:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 9999999999.99
+    Payment:
+      type: object
+      properties:
+        id:
+          type: string
+        recipient:
+          type: string
+        amount:
+          type: string
+        currency:
+          type: string
+          example: EUR
+        status:
+          type: string
+          enum: [accepted, rejected]
+        created_at:
+          type: string
+          format: date-time
+    Session:
+      type: object
+      properties:
+        token:
+          type: string
+        username:
+          type: string
+        expiresAt:
+          type: integer
+          description: Expiration en millisecondes depuis l'epoch

@@ -1,0 +1,8 @@
+# Les scripts et configurations montés dans des conteneurs Linux doivent rester en fins de ligne LF.
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf

@@ -2,3 +2,11 @@
 node_modules/
 __pycache__/
 *.pyc
+
+# Sujet du workshop, livrables générés et certificats locaux
+Workshop-2026*.pdf
+Workshop2026-M2-*
+frontend/dist/
+certs/
+.vscode/
+livrables/

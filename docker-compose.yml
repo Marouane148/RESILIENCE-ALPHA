@@ -1,5 +1,12 @@
 name: resilience-alpha
 
+# Durcissement commun : aucun privilège Linux, pas d'élévation, système de fichiers en lecture seule.
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp"]
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -8,43 +15,129 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-resilience}
       POSTGRES_USER: ${POSTGRES_USER:-resilience}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD in .env}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     networks:
       - resilience-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # Coffre de secrets. Mode développement (stockage en mémoire) : les secrets sont réinjectés par vault-init à chaque démarrage.
+  vault:
+    image: hashicorp/vault:1.18
+    container_name: resilience-vault
+    restart: unless-stopped
+    command: ["server", "-dev"]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_ROOT_TOKEN:?Define VAULT_ROOT_TOKEN in .env}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://127.0.0.1:8200
+    cap_add: [IPC_LOCK]
+    networks:
+      - resilience-net
+    healthcheck:
+      test: ["CMD-SHELL", "vault status >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  vault-init:
+    image: hashicorp/vault:1.18
+    container_name: resilience-vault-init
+    restart: "no"
+    entrypoint: ["sh", "/vault-init.sh"]
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN:?Define VAULT_ROOT_TOKEN in .env}
+      VAULT_APP_TOKEN: ${VAULT_APP_TOKEN:?Define VAULT_APP_TOKEN in .env}
+      PAYMENT_API_TOKEN: ${PAYMENT_API_TOKEN:?Define PAYMENT_API_TOKEN in .env}
+      SESSION_SECRET: ${SESSION_SECRET:?Define SESSION_SECRET in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD in .env}
+    configs:
+      - source: vault-init-script
+        target: /vault-init.sh
+    depends_on:
+      vault:
+        condition: service_healthy
+    networks:
+      - resilience-net
 
   payment-api:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    <<: *hardened
     container_name: resilience-payment-api
     restart: "no"
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: 3000
-      PAYMENT_API_TOKEN: ${PAYMENT_API_TOKEN:?Define PAYMENT_API_TOKEN in .env}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-resilience}:${POSTGRES_PASSWORD:-change-me-in-.env}@postgres:5432/${POSTGRES_DB:-resilience}
+      POSTGRES_DB: ${POSTGRES_DB:-resilience}
+      POSTGRES_USER: ${POSTGRES_USER:-resilience}
+      POSTGRES_HOST: postgres
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_APP_TOKEN:?Define VAULT_APP_TOKEN in .env}
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
+      WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-http://localhost:8080}
+      ASSISTANT_URL: http://assistant:8090
     depends_on:
       postgres:
         condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+    # L'API n'est plus publiée directement : tout le trafic entrant passe par le WAF.
+    networks:
+      - resilience-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:3000/health || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  # WAF : ModSecurity + OWASP Core Rule Set devant l'API de paiement.
+  waf:
+    image: owasp/modsecurity-crs:nginx-alpine
+    container_name: resilience-waf
+    restart: unless-stopped
+    environment:
+      BACKEND: http://payment-api:3000
+      PORT: 8080
+      SERVER_NAME: localhost
+      MODSEC_RULE_ENGINE: "On"
+      MODSEC_AUDIT_ENGINE: RelevantOnly
+      MODSEC_AUDIT_LOG_FORMAT: JSON
+      MODSEC_AUDIT_LOG: /dev/stdout
+      MODSEC_AUDIT_LOG_RELEVANT_STATUS: "^5"
+      # Pas de partie B (en-têtes de requête) : elle contiendrait le jeton Authorization en clair dans les journaux.
+      MODSEC_AUDIT_LOG_PARTS: AFHZ
+      PARANOIA: 1
+      BLOCKING_PARANOIA: 1
+      ANOMALY_INBOUND: 5
+      ANOMALY_OUTBOUND: 4
+    configs:
+      - source: waf-proxy-backend
+        target: /etc/nginx/templates/includes/proxy_backend.conf.template
+    depends_on:
+      payment-api:
+        condition: service_healthy
     ports:
-      - "${API_PORT:-3000}:3000"
+      - "${API_PORT:-3000}:8080"
     networks:
       - resilience-net
       - resilience-edge
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:3000/health || exit 1"]
+      # Le WAF est sain s'il répond en HTTP, même quand l'API est en panne (502) : sa santé ne dépend pas de celle de l'API.
+      test: ["CMD-SHELL", "wget -S --spider http://127.0.0.1:8080/health 2>&1 | grep -q 'HTTP/' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 10s
 
   frontend:
     build:
@@ -52,12 +145,10 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: ${VITE_API_URL:-http://localhost:3000}
-        REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:3000}
-        VITE_API_TOKEN: ${VITE_API_TOKEN:?Define VITE_API_TOKEN in .env}
     container_name: resilience-frontend
     restart: unless-stopped
     depends_on:
-      payment-api:
+      waf:
         condition: service_healthy
     ports:
       - "${FRONTEND_PORT:-8080}:80"
@@ -70,6 +161,29 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  # Profil optionnel "https" : terminaison TLS pour Face ID depuis un autre poste (voir docs/HTTPS-FACE-ID.md).
+  tls-proxy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    container_name: resilience-tls-proxy
+    restart: unless-stopped
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    volumes:
+      - ./certs:/certs:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      waf:
+        condition: service_healthy
+    ports:
+      - "${HTTPS_FRONTEND_PORT:-8443}:8443"
+      - "${HTTPS_API_PORT:-3443}:3443"
+    networks:
+      - resilience-net
+      - resilience-edge
 
   prometheus:
     image: prom/prometheus:v3.6.0
@@ -85,8 +199,6 @@ services:
         target: /etc/prometheus/prometheus.yml
       - source: payment-alerts
         target: /etc/prometheus/payment-alerts.yml
-      - source: alertmanager-config
-        target: /etc/prometheus/alertmanager.yml
     volumes:
       - prometheus-data:/prometheus
     depends_on:
@@ -109,7 +221,7 @@ services:
     restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-in-.env}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Define GRAFANA_ADMIN_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafana-data:/var/lib/grafana
@@ -141,8 +253,6 @@ services:
         target: /etc/loki/config.yml
     volumes:
       - loki-data:/loki
-    ports:
-      - "${LOKI_PORT:-3100}:3100"
     networks:
       - resilience-net
     healthcheck:
@@ -151,6 +261,42 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
+  # Proxys de l'API Docker : aucun composant ne monte directement le socket (droits équivalents à root).
+  # docker-proxy-ro : lecture seule, pour la collecte de logs.
+  docker-proxy-ro:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: resilience-docker-proxy-ro
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      NETWORKS: 1  # lecture seule : Promtail lit les réseaux pour étiqueter les conteneurs
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - resilience-net
+
+  # docker-proxy-ctl : uniquement les appels sur les conteneurs (inspection, démarrage, redémarrage) ; exec, images, volumes, réseaux et suppression sont refusés.
+  docker-proxy-ctl:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: resilience-docker-proxy-ctl
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      POST: 1
+      EXEC: 0
+      IMAGES: 0
+      VOLUMES: 0
+      NETWORKS: 0
+      SERVICES: 0
+      SWARM: 0
+      SECRETS: 0
+      BUILD: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - resilience-net
 
   promtail:
     image: grafana/promtail:3.5.5
@@ -162,10 +308,11 @@ services:
         target: /etc/promtail/config.yml
     volumes:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       loki:
         condition: service_healthy
+      docker-proxy-ro:
+        condition: service_started
     networks:
       - resilience-net
 
@@ -196,8 +343,12 @@ services:
       dockerfile: ansible/remediator.Dockerfile
     container_name: resilience-remediator
     restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      DOCKER_HOST: tcp://docker-proxy-ctl:2375
+      REMEDIATOR_TOKEN: ${REMEDIATOR_TOKEN:?Define REMEDIATOR_TOKEN in .env}
+    depends_on:
+      docker-proxy-ctl:
+        condition: service_started
     networks:
       - resilience-net
 
@@ -205,6 +356,7 @@ services:
     build:
       context: ./ai-detector
       dockerfile: Dockerfile
+    <<: *hardened
     container_name: resilience-anomaly-detector
     restart: unless-stopped
     depends_on:
@@ -218,12 +370,78 @@ services:
       timeout: 5s
       retries: 5
 
+  # Modèle de langage local (moins de 8 milliards de paramètres). Accès sortant limité au téléchargement des modèles.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: resilience-ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+    mem_limit: 6g
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - resilience-net
+      - resilience-egress
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: resilience-ollama-init
+    restart: "no"
+    entrypoint: ["sh", "-c", "ollama pull $${OLLAMA_MODEL} && ollama pull $${OLLAMA_EMBED_MODEL}"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - resilience-net
+
+  # Assistant opérateur : RAG (LangChain) sur les procédures du dépôt. Lecture seule, aucun accès Docker, aucune base.
+  assistant:
+    build:
+      context: ./assistant
+      dockerfile: Dockerfile
+    <<: *hardened
+    container_name: resilience-assistant
+    restart: unless-stopped
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      KNOWLEDGE_DIR: /knowledge
+    volumes:
+      - ./docs:/knowledge/docs:ro
+      - ./README.md:/knowledge/README.md:ro
+      - ./ansible/README.md:/knowledge/ansible-README.md:ro
+      - ./ai-detector/README.md:/knowledge/ai-detector-README.md:ro
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - resilience-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
 volumes:
   postgres-data:
   prometheus-data:
   grafana-data:
   loki-data:
   alertmanager-data:
+  ollama-data:
 
 networks:
   resilience-net:
@@ -231,13 +449,67 @@ networks:
     internal: true
   resilience-edge:
     name: resilience-edge
+  resilience-egress:
+    name: resilience-egress
 
 configs:
+  # Remplace le gabarit du WAF : l'adresse de l'API est résolue dynamiquement (résolveur Docker), pas figée au démarrage de nginx.
+  waf-proxy-backend:
+    content: |
+      proxy_set_header Host $${PROXY_HOST_HEADER};
+      proxy_set_header Proxy "";
+      proxy_set_header Upgrade $$http_upgrade;
+      proxy_set_header Connection $$connection_upgrade;
+      proxy_set_header $${REAL_IP_PROXY_HEADER} $$remote_addr;
+      proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Port $${NGINX_X_FORWARDED_PORT};
+      proxy_set_header X-Forwarded-Proto $${NGINX_X_FORWARDED_PROTO};
+
+      proxy_http_version 1.1;
+      proxy_buffering off;
+      proxy_connect_timeout 5s;
+      proxy_read_timeout 200s;
+      proxy_redirect off;
+
+      proxy_pass_header Authorization;
+      set $$api_upstream $${BACKEND};
+      proxy_pass $$api_upstream;
+
+      SET_REAL_IP_FROM
+      real_ip_header $${REAL_IP_HEADER};
+      real_ip_recursive $${REAL_IP_RECURSIVE};
+
+  caddyfile:
+    content: |
+      {
+        auto_https off
+      }
+      https://:8443 {
+        tls /certs/lab.pem /certs/lab-key.pem
+        reverse_proxy frontend:80
+      }
+      https://:3443 {
+        tls /certs/lab.pem /certs/lab-key.pem
+        reverse_proxy waf:8080
+      }
+
+  vault-init-script:
+    content: |
+      set -eu
+      vault kv put -mount=secret resilience \
+        PAYMENT_API_TOKEN="$$PAYMENT_API_TOKEN" \
+        SESSION_SECRET="$$SESSION_SECRET" \
+        POSTGRES_PASSWORD="$$POSTGRES_PASSWORD" >/dev/null
+      printf 'path "secret/data/resilience" {\n  capabilities = ["read"]\n}\n' | vault policy write payment-api - >/dev/null
+      vault token revoke "$$VAULT_APP_TOKEN" >/dev/null 2>&1 || true
+      vault token create -id="$$VAULT_APP_TOKEN" -policy=payment-api -no-default-policy >/dev/null
+      echo "vault-init: secrets written, application token restricted to read secret/resilience"
+
   prometheus-config:
     content: |
       global:
-        scrape_interval: 15s
-        evaluation_interval: 15s
+        scrape_interval: 5s
+        evaluation_interval: 5s
 
       rule_files:
         - /etc/prometheus/payment-alerts.yml
@@ -260,40 +532,70 @@ configs:
         alertmanagers:
           - static_configs:
               - targets: ["alertmanager:9093"]
+
   payment-alerts:
     content: |
       groups:
-        - name: resilience-payment
+        # Disponibilité : déclenche la remédiation automatique.
+        - name: resilience-availability
+          rules:
+            - alert: PaymentApiDown
+              expr: up{job="payment-api"} == 0
+              for: 5s
+              labels:
+                severity: critical
+                category: availability
+                service: payment-api
+              annotations:
+                summary: API paiement indisponible
+                description: Prometheus ne reçoit plus de métriques de l'API paiement.
+
+            - alert: PaymentDatabaseDown
+              expr: payment_api_database_up == 0
+              for: 5s
+              labels:
+                severity: critical
+                category: availability
+                service: postgres
+              annotations:
+                summary: Base PostgreSQL injoignable depuis l'API
+                description: L'API ne parvient plus à joindre PostgreSQL.
+
+        # Sécurité : alimente la fonction SOC (Grafana), sans redémarrage automatique.
+        - name: resilience-security
           rules:
             - alert: PaymentInvalidRequestBurst
               expr: rate(payment_api_rejected_requests_total[1m]) > 5
               for: 10s
               labels:
                 severity: warning
+                category: security
                 service: payment-api
               annotations:
                 summary: Burst de requêtes invalides sur l'API paiement
                 description: Le taux de rejets dépasse 5 requêtes par seconde.
-
-            - alert: PaymentApiDown
-              expr: up{job="payment-api"} == 0
-              for: 10s
-              labels:
-                severity: critical
-                service: payment-api
-              annotations:
-                summary: API paiement indisponible
-                description: Prometheus ne reçoit plus de métriques de l'API paiement.
 
             - alert: PaymentMlAnomalyDetected
               expr: resilience_anomaly_detected == 1
               for: 10s
               labels:
                 severity: warning
+                category: security
                 service: payment-api
               annotations:
                 summary: Anomalie de trafic détectée par le modèle ML
                 description: Isolation Forest signale un profil de trafic inhabituel.
+
+            - alert: PaymentBiometricAuthFailures
+              expr: sum(increase(payment_api_auth_events_total{event=~"webauthn_.*"}[2m])) > 5
+              for: 5s
+              labels:
+                severity: warning
+                category: security
+                service: payment-api
+              annotations:
+                summary: Échecs répétés d'authentification biométrique
+                description: Plus de 5 échecs WebAuthn en 2 minutes (tentative de force brute ou clé clonée).
 
   loki-config:
     content: |
@@ -333,17 +635,31 @@ configs:
       global:
         resolve_timeout: 1m
 
+      # Seules les alertes de disponibilité déclenchent la remédiation : une attaque n'est pas "réparée" par un redémarrage.
       route:
-        receiver: payment-remediator
-        group_wait: 5s
+        receiver: soc
+        group_by: [alertname]
+        group_wait: 1s
         group_interval: 30s
         repeat_interval: 1h
+        routes:
+          - receiver: payment-remediator
+            matchers:
+              - category="availability"
+            # Tant que l'alerte reste active, la notification est renvoyée : une remédiation échouée est retentée.
+            group_interval: 5s
+            repeat_interval: 15s
 
       receivers:
+        - name: soc
         - name: payment-remediator
           webhook_configs:
             - url: http://remediator:8081/
               send_resolved: false
+              http_config:
+                authorization:
+                  type: Bearer
+                  credentials: ${REMEDIATOR_TOKEN}
 
   promtail-config:
     content: |
@@ -360,7 +676,7 @@ configs:
       scrape_configs:
         - job_name: docker
           docker_sd_configs:
-            - host: unix:///var/run/docker.sock
+            - host: tcp://docker-proxy-ro:2375
               refresh_interval: 5s
           relabel_configs:
             - source_labels: [__meta_docker_container_name]
