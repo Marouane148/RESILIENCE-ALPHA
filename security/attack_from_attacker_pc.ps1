@@ -9,7 +9,7 @@
   Scénarios :
     burst      Rafale de paiements invalides (déni de service applicatif)  -> PaymentInvalidRequestBurst / anomalie ML
     injection  Charges d'injection SQL et de script                          -> bloquées par le WAF (403), visibles dans le dashboard SOC
-    auth       Tentatives de connexion biométrique invalides                 -> PaymentBiometricAuthFailures
+    auth       Tentatives de connexion avec de mauvais mots de passe         -> PaymentBiometricAuthFailures (échecs d'authentification), blocage après 5 essais
     all        Les trois scénarios à la suite
 
 .EXAMPLE
@@ -70,8 +70,8 @@ if ($Scenario -in 'injection', 'all') {
 }
 
 if ($Scenario -in 'auth', 'all') {
-  $codes = 1..12 | ForEach-Object { Send-Request '/auth/login/verify' '{"challengeId":"inconnu","response":{"id":"fausse-cle"}}' }
-  Show-Summary 'Connexions biometriques invalides (401 attendu)' $codes
+  $codes = 1..12 | ForEach-Object { Send-Request '/auth/password/login' ('{"username":"riad","password":"essai-' + $_ + '"}') }
+  Show-Summary 'Mots de passe invalides (401 puis 429 : blocage de la source apres 5 echecs)' $codes
 }
 
 $health = try { (Invoke-RestMethod "$base/health" -TimeoutSec 3).status } catch { 'injoignable' }

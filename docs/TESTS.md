@@ -2,18 +2,27 @@
 
 Essais réalisés le 22 octobre 2026 sur le PC Hôte (Windows 11, Docker Desktop, 8 cœurs, 16 Go de RAM partagés avec le poste de travail). Aucune donnée réelle. Les essais sont reproductibles.
 
-## 1. Tests automatisés (33 tests)
+## 1. Tests automatisés (42 tests)
 
 | Suite | Commande | Tests | Couverture |
 |---|---|---|---|
-| Backend | `cd backend && npm test` | 12 | Passkey WebAuthn : enrôlement, connexion, session falsifiée, rejeu de challenge, vérification utilisateur absente, compteur non croissant ; chargement des secrets Vault |
+| Backend | `cd backend && npm test` | 21 | Connexion par mot de passe (session, jeton falsifié, routes Face ID désactivées, mauvais identifiants indistinguables, blocage après 5 échecs) ; passkey WebAuthn (enrôlement, connexion, rejeu de challenge, vérification utilisateur absente, compteur non croissant) ; chargement des secrets Vault |
 | Détecteur ML | `cd ai-detector && python -m unittest discover -s tests -v` | 9 | Lecture des compteurs, remise à zéro après redémarrage, rafale détectée, absence de contamination par une attaque, ré-entraînement borné |
 | Remediator | `python -m unittest discover -s ansible/tests -v` | 6 | Contrôle du jeton, mise en file d'une alerte pendant une exécution, relance après échec, limite de tentatives |
 | Assistant | `python -m unittest discover -s assistant/tests -v` | 6 | Refus des demandes d'action, filtrage hors sujet, modèle sous 8 milliards de paramètres |
 
 Ces suites sont exécutées par la CI ([.github/workflows/ci.yml](../.github/workflows/ci.yml)), avec le build du frontend et la validation du compose.
 
-## 2. Recette de bout en bout : 26 contrôles, 0 échec
+## 2. Recette de bout en bout : 29 contrôles, 0 échec
+
+Deux séries complètes ont été exécutées le 22 octobre 2026 :
+
+| Série | Moment | Contrôles | Reprise après arrêt de l'API | Reprise après arrêt de PostgreSQL |
+|---|---|---|---|---|
+| 1 | Avant le passage au mode mot de passe | 26 sur 26 | 33, 28, 25 s (moyenne 28,7 s) | 24, 26, 32 s (moyenne 27,3 s) |
+| 2 | Après le passage au mode mot de passe | **29 sur 29** | 19, 23, 21 s (moyenne 21 s) | 20, 21, 22 s (moyenne 21 s) |
+
+Sur les 6 essais de chaque panne, la reprise va de **19 à 33 s**, soit une moyenne d'environ 25 s, sous l'objectif de 60 s. L'écart entre les deux séries vient surtout de la charge de la machine hôte (navigateurs et outils ouverts pendant la première série). Les trois contrôles ajoutés à la série 2 concernent l'authentification (mode annoncé par l'API, mauvais mot de passe refusé, routes Face ID désactivées). Le tableau ci-dessous est celui de la série 2.
 
 Commande : `.\security\e2e_test.ps1` (3 essais par panne, retour au calme attendu entre chaque essai).
 
@@ -27,6 +36,9 @@ Commande : `.\security\e2e_test.ps1` (3 essais par panne, retour au calme attend
 | Injection SQL bloquée par le WAF (403) | PASS |
 | Injection de script bloquée par le WAF (403) | PASS |
 | Métriques : jauge base de données et événements d'authentification | PASS |
+| Mode de connexion annoncé par l'API (`password`) | PASS |
+| Mauvais mot de passe refusé (401) | PASS |
+| Routes Face ID désactivées en mode mot de passe (404) | PASS |
 | Remediator refuse un appel sans jeton (401) | PASS |
 | Aucun secret applicatif dans l'environnement de l'API | PASS |
 | API en système de fichiers lecture seule | PASS |
@@ -40,9 +52,9 @@ Commande : `.\security\e2e_test.ps1` (3 essais par panne, retour au calme attend
 | Assistant : appel sans jeton refusé (401) | PASS |
 | Assistant : refuse d'exécuter une action | PASS |
 | Assistant : refuse une question hors sujet | PASS |
-| Reprise autonome après arrêt de l'API | PASS : 33, 28, 25 s (moyenne 28,7 s) |
+| Reprise autonome après arrêt de l'API | PASS : 19, 23, 21 s (moyenne 21 s) |
 | Nouvelle transaction acceptée après la reprise de l'API | PASS |
-| Reprise autonome après arrêt de PostgreSQL | PASS : 24, 26, 32 s (moyenne 27,3 s) |
+| Reprise autonome après arrêt de PostgreSQL | PASS : 20, 21, 22 s (moyenne 21 s) |
 | Transactions conservées après les pannes de base | PASS |
 | Nouvelle transaction acceptée après la reprise de la base | PASS |
 
@@ -56,7 +68,26 @@ Commande : `.\security\e2e_test.ps1` (3 essais par panne, retour au calme attend
 | Redémarrage du conteneur et passage à `healthy` | 5 à 10 s |
 | Vérification de `/health` avec `database: ok` | 1 à 3 s |
 
-## 3. Parcours Face ID de bout en bout (navigateur piloté)
+## 3. Parcours de connexion de bout en bout (navigateur piloté)
+
+### 3.1 Mode mot de passe (par défaut)
+
+Chrome piloté, à travers le WAF : 8 contrôles sur 8 réussis.
+
+| Contrôle | Résultat |
+|---|---|
+| Formulaire identifiant et mot de passe affiché | PASS |
+| Aucun bouton Face ID en mode mot de passe | PASS |
+| Mauvais mot de passe : message d'erreur | PASS |
+| Bon mot de passe : dashboard affiché | PASS |
+| Paiement depuis l'interface accepté | PASS |
+| Session conservée après rechargement (F5) | PASS |
+| Déconnexion : retour au formulaire | PASS |
+| Aucune requête bloquée à tort par le WAF | PASS |
+
+Anti-force-brute : sur 12 essais invalides consécutifs, 5 réponses 401 puis 7 réponses 429 ; les routes Face ID répondent 404 dans ce mode.
+
+### 3.2 Mode passkey (`AUTH_MODE=webauthn`, option)
 
 Chrome avec un authentificateur de plateforme virtuel (vérification utilisateur activée), à travers le WAF : 8 contrôles sur 8 réussis.
 
@@ -71,7 +102,7 @@ Chrome avec un authentificateur de plateforme virtuel (vérification utilisateur
 | Compteur de signature incrémenté (1 puis 2) | PASS |
 | Aucune requête bloquée à tort par le WAF (403) | PASS |
 
-Cet essai n'a pas été réalisé avec un iPhone ou un Mac réels : il valide le protocole et l'intégration, pas la biométrie matérielle. Le profil HTTPS ([HTTPS-FACE-ID.md](HTTPS-FACE-ID.md)) n'a pas été testé de bout en bout.
+Mode passkey : cet essai n'a pas été réalisé avec un iPhone ou un Mac réels : il valide le protocole et l'intégration, pas la biométrie matérielle. Le profil HTTPS ([HTTPS-FACE-ID.md](HTTPS-FACE-ID.md)) n'a pas été testé de bout en bout.
 
 ## 4. Scénarios d'attaque
 
@@ -79,11 +110,11 @@ Cet essai n'a pas été réalisé avec un iPhone ou un Mac réels : il valide le
 |---|---|
 | Rafale de requêtes invalides (40 s, 8 workers) | Taux de rejets d'environ 13 par seconde ; `PaymentInvalidRequestBurst` et `PaymentMlAnomalyDetected` actives ; aucun redémarrage déclenché |
 | Injections SQL, script et traversée de chemin | Réponse 403 du WAF, journal ModSecurity visible dans le dashboard SOC |
-| 12 connexions biométriques invalides | `PaymentBiometricAuthFailures` active ; 290 échecs d'authentification cumulés sur le dashboard |
+| Mots de passe invalides en série (12 essais) | 5 réponses 401 puis 429 : blocage de la source ; événements `password_failed` et `password_blocked` journalisés ; alerte `PaymentBiometricAuthFailures` (échecs d'authentification) |
 
 ## 4 bis. Essai à deux postes (PC Hôte Windows + Mac attaquant)
 
-Réalisé le 22 octobre 2026. PC Hôte sur `192.168.137.1` (point d'accès mobile Windows, pare-feu ouvert pour `192.168.137.0/24`), Mac attaquant sur `192.168.137.23`, même réseau privé, hors réseau du campus.
+Réalisé le 22 octobre 2026. PC Hôte sur `192.168.137.1` (point d'accès mobile Windows, pare-feu ouvert pour `192.168.137.0/24`), Mac attaquant sur `192.168.137.23`, même réseau privé, hors réseau du campus. Les attaques ont ensuite été rejouées depuis un second Mac sur un point d'accès de téléphone (réseau privé `172.20.10.x`, PC Hôte en `172.20.10.12`, Mac en `172.20.10.2`) : rafale détectée (environ 20 à 40 rejets par seconde, anomalie ML à 1), service resté disponible.
 
 | Étape | Résultat observé |
 |---|---|

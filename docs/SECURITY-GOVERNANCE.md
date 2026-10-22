@@ -27,7 +27,8 @@ Analyse complète en cinq ateliers : [EBIOS-RM.md](EBIOS-RM.md).
 
 ## Authentification et contrôle d'accès
 
-- Connexion par passkey de plateforme (WebAuthn : Face ID, Touch ID, Windows Hello) avec **vérification utilisateur obligatoire** ; seule une clé publique est stockée.
+- **Mode par défaut (`AUTH_MODE=password`)** : identifiant et mot de passe stockés dans Vault, comparaison à temps constant, mêmes messages d'erreur pour un mauvais identifiant et un mauvais mot de passe, **blocage de la source après 5 échecs en une minute** (réponse 429, événement `password_blocked` journalisé), session signée de 15 minutes.
+- **Mode optionnel (`AUTH_MODE=webauthn`)** : passkey de plateforme (Face ID, Touch ID, Windows Hello) avec **vérification utilisateur obligatoire** ; seule une clé publique est stockée.
 - Challenge à usage unique de 5 minutes, contrôle du compteur de signature (détection de clé clonée), sessions signées de 15 minutes.
 - L'enrôlement d'un appareil exige le jeton de laboratoire (`PAYMENT_API_TOKEN`) ou une session ouverte.
 - Le jeton de laboratoire reste accepté pour les scripts ; les comparaisons de secrets sont à temps constant.
@@ -55,7 +56,7 @@ Un WAF ModSecurity avec OWASP Core Rule Set (niveau de paranoïa 1) est placé d
 Les journaux de tous les conteneurs sont centralisés dans Loki. Le dashboard « Resilience Alpha - SOC » corrèle alertes de sécurité et de disponibilité, événements d'authentification, blocages WAF, verdicts du modèle ML et actions du remediator. Les alertes sont séparées par catégorie :
 
 - `availability` (API ou base indisponible) : remédiation automatique ;
-- `security` (rafale de rejets, anomalie ML, échecs biométriques) : **aucun redémarrage**, analyse humaine. Rétablir un service n'est pas corriger une compromission.
+- `security` (rafale de rejets, anomalie ML, échecs d'authentification) : **aucun redémarrage**, analyse humaine. Rétablir un service n'est pas corriger une compromission.
 
 ## NIS2 / DORA - limites du prototype
 

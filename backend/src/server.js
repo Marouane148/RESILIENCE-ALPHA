@@ -27,6 +27,8 @@ function logEvent(level, payload) {
 }
 
 app.disable('x-powered-by');
+// Le WAF est le seul proxy devant l'API : l'adresse source réelle est celle qu'il ajoute à X-Forwarded-For.
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '32kb' }));
 app.use((request, response, next) => {
   response.setHeader('Access-Control-Allow-Origin', '*');
@@ -155,8 +157,10 @@ app.post('/assistant/ask', async (request, response) => {
 
 async function start() {
   const secrets = await loadSecrets();
+  const authMode = process.env.AUTH_MODE === 'webauthn' ? 'webauthn' : 'password';
   if (!secrets.PAYMENT_API_TOKEN || !secrets.POSTGRES_PASSWORD) throw new Error('required secrets are missing');
-  logEvent('log', { event: 'secrets_loaded', source: secrets.source });
+  if (authMode === 'password' && (!secrets.DASHBOARD_USER || !secrets.DASHBOARD_PASSWORD)) throw new Error('dashboard credentials are missing');
+  logEvent('log', { event: 'secrets_loaded', source: secrets.source, auth_mode: process.env.AUTH_MODE === 'webauthn' ? 'webauthn' : 'password' });
 
   const databaseUrl = process.env.DATABASE_URL
     || `postgresql://${encodeURIComponent(process.env.POSTGRES_USER || 'resilience')}:${encodeURIComponent(secrets.POSTGRES_PASSWORD)}`
@@ -175,6 +179,9 @@ async function start() {
     pool,
     apiToken: secrets.PAYMENT_API_TOKEN,
     sessionSecret: secrets.SESSION_SECRET,
+    mode: authMode,
+    dashboardUser: secrets.DASHBOARD_USER,
+    dashboardPassword: secrets.DASHBOARD_PASSWORD,
     onRejected: (reason) => {
       rejectedRequestCount += 1;
       countAuthEvent(reason);

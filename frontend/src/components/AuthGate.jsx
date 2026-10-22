@@ -32,6 +32,7 @@ function describeError(error) {
   }
   if (error?.name === 'InvalidStateError') return 'Cet appareil est déjà enrôlé pour ce compte.';
   if (error?.message === '401') return 'Authentification refusée.';
+  if (error?.message === '429') return 'Trop de tentatives. Réessayez dans une minute.';
   if (error?.message === '400') return 'Enrôlement refusé : vérifiez le nom et le code.';
   return 'Authentification impossible : l’API est indisponible.';
 }
@@ -49,6 +50,18 @@ export default function AuthGate() {
   const [enrollmentCode, setEnrollmentCode] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [authMode, setAuthMode] = useState(null);
+  const [password, setPassword] = useState('');
+
+  // Le mode de connexion (mot de passe ou Face ID) est annoncé par l'API.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${apiUrl}/auth/config`)
+      .then((response) => (response.ok ? response.json() : { mode: 'password' }))
+      .then((config) => { if (!cancelled) setAuthMode(config.mode === 'webauthn' ? 'webauthn' : 'password'); })
+      .catch(() => { if (!cancelled) setAuthMode('password'); });
+    return () => { cancelled = true; };
+  }, []);
 
   const supported = browserSupportsWebAuthn() && window.isSecureContext;
 
@@ -64,6 +77,7 @@ export default function AuthGate() {
     setMode('login');
     setUsername('');
     setEnrollmentCode('');
+    setPassword('');
   }
 
   useEffect(() => {
@@ -71,6 +85,20 @@ export default function AuthGate() {
     const timeout = window.setTimeout(logout, Math.max(session.expiresAt - Date.now(), 0));
     return () => window.clearTimeout(timeout);
   }, [session]);
+
+  async function handlePasswordLogin(event) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage('');
+    try {
+      openSession(await postJson('/auth/password/login', { username: username.trim(), password }));
+      setPassword('');
+    } catch (error) {
+      setMessage(error?.message === '401' ? 'Identifiant ou mot de passe incorrect.' : describeError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function handleLogin() {
     setBusy(true);
@@ -103,6 +131,8 @@ export default function AuthGate() {
 
   if (session) return <PaymentDashboard onLogout={logout} session={session} />;
 
+  const passwordMode = authMode !== 'webauthn';
+
   return (
     <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-bg px-4 py-10 text-ink">
       <div
@@ -126,21 +156,47 @@ export default function AuthGate() {
           <ShieldIcon className="h-6 w-6" />
         </div>
         <h1 className="text-2xl font-semibold tracking-tight text-ink">
-          {mode === 'login' ? 'Connexion sécurisée' : 'Enrôler cet appareil'}
+          {passwordMode || mode === 'login' ? 'Connexion sécurisée' : 'Enrôler cet appareil'}
         </h1>
         <p className="mt-2 text-sm text-muted">
-          {mode === 'login'
-            ? 'Validez avec Face ID, Touch ID, Windows Hello ou le déverrouillage de votre appareil.'
-            : 'Associez la biométrie de cet appareil à votre compte. Seule une clé publique est conservée.'}
+          {passwordMode
+            ? 'Saisissez votre identifiant et votre mot de passe. La session expire au bout de 15 minutes.'
+            : mode === 'login'
+              ? 'Validez avec Face ID, Touch ID, Windows Hello ou le déverrouillage de votre appareil.'
+              : 'Associez la biométrie de cet appareil à votre compte. Seule une clé publique est conservée.'}
         </p>
 
-        {!supported && (
+        {!passwordMode && !supported && (
           <p className="mt-6 rounded-xl bg-warn-soft px-4 py-3 text-sm text-warn">
             Face ID nécessite un navigateur compatible WebAuthn et une connexion sécurisée (HTTPS ou localhost).
           </p>
         )}
 
-        {mode === 'login' ? (
+        {passwordMode ? (
+          <form className="mt-7 space-y-4" onSubmit={handlePasswordLogin}>
+            <input
+              aria-label="Identifiant"
+              autoComplete="username"
+              className={inputClass}
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="Identifiant"
+              type="text"
+              value={username}
+            />
+            <input
+              aria-label="Mot de passe"
+              autoComplete="current-password"
+              className={inputClass}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Mot de passe"
+              type="password"
+              value={password}
+            />
+            <button className={primaryButton} disabled={busy || authMode === null || !username.trim() || !password} type="submit">
+              {busy ? 'Vérification…' : 'Se connecter'}
+            </button>
+          </form>
+        ) : mode === 'login' ? (
           <div className="mt-7 space-y-4">
             <button className={primaryButton} disabled={!supported || busy} onClick={handleLogin} type="button">
               {busy ? 'Vérification…' : 'Se connecter avec Face ID'}

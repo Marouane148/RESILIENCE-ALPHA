@@ -10,6 +10,8 @@ export async function loadSecrets(env = process.env, { retries = 30, delayMs = 2
       PAYMENT_API_TOKEN: env.PAYMENT_API_TOKEN,
       SESSION_SECRET: env.SESSION_SECRET,
       POSTGRES_PASSWORD: env.POSTGRES_PASSWORD,
+      DASHBOARD_USER: env.DASHBOARD_USER,
+      DASHBOARD_PASSWORD: env.DASHBOARD_PASSWORD,
       source: 'environment',
     };
   }

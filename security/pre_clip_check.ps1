@@ -79,7 +79,7 @@ $results | Format-Table -AutoSize -Wrap
 $blocking = @($results | Where-Object { $_.Etat -eq 'BLOQUANT' }).Count
 if ($blocking -eq 0) {
   Write-Host 'PRET A ENREGISTRER' -ForegroundColor Green
-  Write-Host 'Rappels manuels : F5 sur le dashboard, reconnexion Face ID (session de 15 min), champs demo-chrono / 5 remplis, Grafana en Last 5 minutes + 5s, commandes pretes sans Entree.'
+  Write-Host 'Rappels manuels : F5 sur le dashboard, connexion riad + mot de passe (session de 15 min), champs demo-chrono / 5 remplis, Grafana en Last 5 minutes + 5s, commandes pretes sans Entree.'
 } else {
   Write-Host "NON PRET : $blocking point(s) bloquant(s). Attendre 2 minutes de calme puis relancer." -ForegroundColor Red
 }

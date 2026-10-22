@@ -44,7 +44,22 @@ function takeChallenge(id) {
   return entry && entry.expiresAt > Date.now() ? entry : null;
 }
 
-export function createAuth({ pool, apiToken, sessionSecret: providedSecret, onRejected = () => {}, onEvent = () => {} }) {
+const maxPasswordFailures = 5;
+const passwordWindowMs = 60 * 1000;
+
+// Mode 'password' (par défaut) : identifiant et mot de passe. Mode 'webauthn' : passkey (Face ID, Touch ID, Windows Hello).
+export function createAuth({
+  pool,
+  apiToken,
+  sessionSecret: providedSecret,
+  mode = 'password',
+  dashboardUser,
+  dashboardPassword,
+  onRejected = () => {},
+  onEvent = () => {},
+}) {
+  const webauthnEnabled = mode === 'webauthn';
+  const failures = new Map();
   const sessionSecret = providedSecret || process.env.SESSION_SECRET
     || crypto.createHmac('sha256', apiToken || 'unset').update('session-secret').digest('hex');
 
@@ -74,7 +89,7 @@ export function createAuth({ pool, apiToken, sessionSecret: providedSecret, onRe
     return header.startsWith('Bearer ') ? header.slice(7) : '';
   }
 
-  // Les routes /auth/login/* sont publiques ; tout le reste exige le token de laboratoire ou une session Face ID.
+  // Les routes de connexion sont publiques ; tout le reste exige le token de laboratoire ou une session ouverte.
   function isAuthorized(request) {
     const token = bearerToken(request);
     if (!token) return false;
@@ -83,10 +98,29 @@ export function createAuth({ pool, apiToken, sessionSecret: providedSecret, onRe
   }
 
   function isPublic(request) {
-    return request.path.startsWith('/auth/login/');
+    return request.path.startsWith('/auth/login/') || request.path.startsWith('/auth/password/') || request.path === '/auth/config';
+  }
+
+  // Limite les essais de mot de passe par adresse source : au-delà de 5 échecs par minute, la source est bloquée 1 minute.
+  function passwordBlocked(ip) {
+    const entry = failures.get(ip);
+    if (!entry) return false;
+    if (entry.resetAt <= Date.now()) {
+      failures.delete(ip);
+      return false;
+    }
+    return entry.count >= maxPasswordFailures;
+  }
+
+  function recordPasswordFailure(ip) {
+    const now = Date.now();
+    const entry = failures.get(ip);
+    if (!entry || entry.resetAt <= now) failures.set(ip, { count: 1, resetAt: now + passwordWindowMs });
+    else entry.count += 1;
   }
 
   async function init() {
+    if (!webauthnEnabled) return;
     await pool.query(`
       CREATE TABLE IF NOT EXISTS auth_users (
         id TEXT PRIMARY KEY,
@@ -107,6 +141,36 @@ export function createAuth({ pool, apiToken, sessionSecret: providedSecret, onRe
   }
 
   const router = express.Router();
+
+  router.get('/auth/config', (_request, response) => response.json({ mode }));
+
+  router.post('/auth/password/login', (request, response) => {
+    if (mode !== 'password' || !dashboardUser || !dashboardPassword) return response.status(404).json({ error: 'not found' });
+    if (passwordBlocked(request.ip)) {
+      onRejected('password_blocked');
+      return response.status(429).json({ error: 'too many attempts, retry in one minute' });
+    }
+    const { username, password } = request.body ?? {};
+    const valid = typeof username === 'string' && typeof password === 'string'
+      && safeEqual(username.trim(), dashboardUser) && safeEqual(password, dashboardPassword);
+    if (!valid) {
+      recordPasswordFailure(request.ip);
+      onRejected('password_failed');
+      return response.status(401).json({ error: 'authentication failed' });
+    }
+    failures.delete(request.ip);
+    onEvent('password_login_success');
+    console.log(JSON.stringify({ event: 'password_login', username: dashboardUser, timestamp: new Date().toISOString() }));
+    return response.json(issueSession(dashboardUser));
+  });
+
+  // En mode mot de passe, les routes WebAuthn sont désactivées.
+  router.use('/auth', (request, response, next) => {
+    if (!webauthnEnabled && (request.path.startsWith('/register') || request.path.startsWith('/login'))) {
+      return response.status(404).json({ error: 'not found' });
+    }
+    return next();
+  });
 
   router.post('/auth/register/options', async (request, response) => {
     const username = String(request.body?.username ?? '').trim();

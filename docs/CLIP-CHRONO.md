@@ -6,7 +6,7 @@ La vidéo ne se génère pas automatiquement : elle doit être filmée sur les v
 
 ## Préparation (avant d'enregistrer)
 
-1. PC Hôte : plateforme démarrée (`docker compose ps` tout `healthy`), connecté au dashboard par Face ID, Grafana ouvert sur « Resilience Alpha - Incident & Recovery », période 15 minutes, actualisation 5 s.
+1. PC Hôte : plateforme démarrée (`docker compose ps` tout `healthy`), connecté au dashboard (identifiant et mot de passe), Grafana ouvert sur « Resilience Alpha - Incident & Recovery », période 15 minutes, actualisation 5 s.
 2. Disposition d'écran du PC Hôte, côte à côte : à gauche le dashboard de paiement (http://localhost:8080), à droite Grafana. Un terminal `docker compose logs -f remediator` réduit en bas.
 3. PC Attaquant : fenêtre PowerShell prête avec la commande d'attaque saisie, sans l'avoir lancée.
 4. Enregistrement : OBS Studio (une seule scène, capture de la fenêtre ou de l'écran) ou capture d'écran Windows (Win+Maj+S, mode vidéo). Résolution 1920x1080, 30 images/s.

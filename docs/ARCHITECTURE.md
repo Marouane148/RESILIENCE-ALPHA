@@ -48,9 +48,9 @@ flowchart LR
 
 | Domaine | Composant | Rôle |
 |---|---|---|
-| Développement | Frontend React + Tailwind + Nginx | Dashboard de paiement, connexion Face ID, état du service en direct, assistant opérateur |
-| Développement | API Node.js/Express | Paiements, authentification WebAuthn, métriques Prometheus, relais assistant |
-| Développement | PostgreSQL | Transactions fictives, utilisateurs et clés publiques WebAuthn |
+| Développement | Frontend React + Tailwind + Nginx | Dashboard de paiement, connexion par identifiant et mot de passe (passkey en option), état du service en direct, assistant opérateur |
+| Développement | API Node.js/Express | Paiements, authentification (mot de passe par défaut, WebAuthn en option), métriques Prometheus, relais assistant |
+| Développement | PostgreSQL | Transactions fictives, utilisateurs et clés publiques WebAuthn (mode passkey) |
 | Développement | Remediator + Ansible | Reçoit les alertes de disponibilité, répare les conteneurs, vérifie la reprise |
 | Infrastructure | Docker Compose | Déploiement reproductible, réseaux, healthchecks |
 | Infrastructure | Prometheus, Grafana, Loki, Promtail | Métriques, visualisation, journaux centralisés |
@@ -70,7 +70,7 @@ flowchart LR
 
 ## Flux d'une transaction
 
-1. L'opérateur se connecte avec une passkey (Face ID, Touch ID, Windows Hello) : l'API vérifie l'assertion et émet une session signée de 15 minutes.
+1. L'opérateur se connecte avec son identifiant et son mot de passe (stockés dans Vault) : l'API vérifie les identifiants, limite les essais (blocage d'une minute après 5 échecs) et émet une session signée de 15 minutes. En mode `AUTH_MODE=webauthn`, la connexion se fait par passkey (Face ID, Touch ID, Windows Hello) avec vérification de l'assertion.
 2. Le frontend envoie `POST /payments` avec la session ; la requête traverse le WAF.
 3. L'API valide la charge utile puis insère la transaction dans PostgreSQL avec une requête paramétrée.
 4. Le dashboard relit les transactions et affiche l'état de santé mesuré sur `/health`.
@@ -85,7 +85,7 @@ flowchart LR
 
 ## Flux d'un incident de sécurité
 
-Les alertes de catégorie `security` (rafale de requêtes invalides, anomalie ML, échecs biométriques) n'appellent **pas** le remediator : redémarrer un service ne neutralise pas un attaquant. Elles sont visibles dans Alertmanager et dans le dashboard SOC. Le WAF bloque en amont les motifs d'injection connus (réponse 403).
+Les alertes de catégorie `security` (rafale de requêtes invalides, anomalie ML, échecs d'authentification) n'appellent **pas** le remediator : redémarrer un service ne neutralise pas un attaquant. Elles sont visibles dans Alertmanager et dans le dashboard SOC. Le WAF bloque en amont les motifs d'injection connus (réponse 403).
 
 ## Décisions d'architecture
 

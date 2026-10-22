@@ -10,7 +10,7 @@ Le démonstrateur ne constitue pas une certification. Ce document distingue ce q
 | Continuité et reprise | NIS2 art. 21 (continuité) ; DORA art. 11 | Reprise automatique, RTO mesuré, RPO nul sur les transactions validées | [PCA-PRA.md](PCA-PRA.md), [TESTS.md](TESTS.md) |
 | Détection d'événements anormaux | DORA art. 10 | Détection ML, alertes, WAF, dashboard SOC | Dashboards Grafana |
 | Journalisation et traçabilité | NIS2 art. 21 ; DORA art. 12 | Journaux applicatifs centralisés dans Loki, événements d'authentification | Logs `payment-api`, `waf`, `remediator` |
-| Contrôle d'accès et authentification forte | NIS2 art. 21 (MFA, contrôle d'accès) | Passkey avec vérification utilisateur (biométrie ou code de l'appareil), sessions courtes | Tests d'authentification |
+| Contrôle d'accès et authentification forte | NIS2 art. 21 (MFA, contrôle d'accès) | Mot de passe stocké dans Vault avec blocage anti-force-brute, sessions courtes ; passkey avec vérification utilisateur en option (biométrie ou code de l'appareil), sessions courtes | Tests d'authentification |
 | Gestion des secrets | NIS2 art. 21 (cryptographie, gestion des accès) | Vault, token applicatif en lecture seule | Configuration `docker-compose.yml` |
 | Tests de résilience | DORA chap. IV | Essais de panne (API, base), essais d'attaque contrôlés | [TESTS.md](TESTS.md) |
 | Sécurité du développement | NIS2 art. 21 | Tests automatisés, requêtes paramétrées, validation des entrées | `backend/test`, `ai-detector/tests` |

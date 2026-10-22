@@ -87,6 +87,12 @@ $health = Get-Health
 Record 'API et base de donnees operationnelles' ($health.status -eq 'ok' -and $health.database -eq 'ok')
 Record 'Route metier sans jeton refusee (401)' ((Invoke-Status 'GET' "$Api/payments") -eq 401)
 Record 'Enrolement sans jeton refuse (401)' ((Invoke-Status 'POST' "$Api/auth/register/options" @{} '{"username":"intrus"}') -eq 401)
+$authConfig = try { Invoke-RestMethod "$Api/auth/config" -TimeoutSec 3 } catch { $null }
+Record 'Mode de connexion annonce par l''API' ($authConfig -and $authConfig.mode -in 'password', 'webauthn') $(if ($authConfig) { $authConfig.mode } else { 'injoignable' })
+if ($authConfig.mode -eq 'password') {
+  Record 'Connexion : mauvais mot de passe refuse (401)' ((Invoke-Status 'POST' "$Api/auth/password/login" @{} '{"username":"riad","password":"mauvais-mot-de-passe"}') -eq 401)
+  Record 'Routes Face ID desactivees en mode mot de passe (404)' ((Invoke-Status 'POST' "$Api/auth/login/options" @{} '{}') -eq 404)
+}
 Record 'Paiement valide accepte (201)' ((New-Payment 'e2e-avant-incident') -eq 201)
 Record 'Paiement invalide refuse (400)' ((Invoke-Status 'POST' "$Api/payments" $auth '{"recipient":"x","amount":0}') -eq 400)
 Record 'Injection SQL bloquee par le WAF (403)' ((Invoke-Status 'GET' "$Api/payments?id=1%27%20OR%20%271%27%3D%271" $auth) -eq 403)

@@ -8,7 +8,7 @@ La plateforme encaisse un incident (panne d'un service, attaque applicative) et 
 
 1. [Architecture](#architecture)
 2. [Démarrage rapide](#démarrage-rapide)
-3. [Authentification Face ID](#authentification-face-id-webauthn)
+3. [Authentification](#authentification)
 4. [Vérifier le système](#vérifier-le-système)
 5. [Scénarios d'attaque (PC Attaquant)](#scénarios-dattaque-pc-attaquant)
 6. [Démonstration de reprise autonome](#démonstration-de-reprise-autonome)
@@ -99,19 +99,30 @@ Au premier démarrage, l'assistant télécharge ses modèles locaux (environ 2 G
 
 PostgreSQL, Vault, Loki, l'assistant, Ollama, le remediator et les proxys Docker ne sont **pas** exposés au réseau.
 
-## Authentification Face ID (WebAuthn)
+## Authentification
 
-Le dashboard est protégé par une passkey de plateforme : Face ID (iPhone, Mac), Touch ID, Windows Hello ou déverrouillage Android. La biométrie ne quitte jamais l'appareil ; l'API ne stocke qu'une clé publique.
+Le mode de connexion se règle avec `AUTH_MODE` dans `.env` :
 
-1. Ouvrir http://localhost:8080, puis **Première connexion ? Enrôler cet appareil**.
-2. Saisir un nom d'utilisateur et le code d'enrôlement (la valeur de `PAYMENT_API_TOKEN`), puis valider avec la biométrie ou le code de l'appareil. Choisir **Windows Hello** (ou l'authentificateur de l'appareil), pas un gestionnaire de mots de passe synchronisé.
-3. Les connexions suivantes utilisent **Se connecter avec Face ID**. La session dure 15 minutes.
+| Mode | Fonctionnement |
+|---|---|
+| `password` (**défaut**) | Identifiant et mot de passe (`DASHBOARD_USER`, `DASHBOARD_PASSWORD`, stockés dans Vault). Session signée de 15 minutes. Après 5 échecs en une minute, la source est bloquée une minute (réponse 429) et l'événement est journalisé. |
+| `webauthn` | Passkey de plateforme : Face ID, Touch ID, Windows Hello. Vérification utilisateur obligatoire, challenge à usage unique, compteur de signature. Seule une clé publique est stockée. |
 
-Contraintes :
+En mode `password`, les routes Face ID répondent 404. Le jeton `PAYMENT_API_TOKEN` reste accepté pour les scripts et les `curl`.
 
-- WebAuthn exige HTTPS ou `localhost`. Depuis un autre PC en `http://192.168.x.x`, la connexion biométrique est indisponible ; servir le frontend en HTTPS avec un certificat de confiance et un nom de domaine (un RP ID ne peut pas être une adresse IP).
+### Mode mot de passe
+
+1. Renseigner `DASHBOARD_USER` et `DASHBOARD_PASSWORD` dans `.env` (mot de passe long et aléatoire).
+2. `docker compose up -d` (Vault reçoit les identifiants au démarrage).
+3. Ouvrir http://localhost:8080 et se connecter.
+
+### Mode Face ID (facultatif)
+
+Mettre `AUTH_MODE=webauthn`, puis `docker compose up -d`. Enrôlement : « Première connexion ? Enrôler cet appareil », nom d'utilisateur, code d'enrôlement (valeur de `PAYMENT_API_TOKEN`), puis Windows Hello ou Face ID.
+
+- WebAuthn exige HTTPS ou `localhost`. Depuis un autre poste en `http://192.168.x.x`, la connexion biométrique est indisponible : voir [HTTPS et Face ID](docs/HTTPS-FACE-ID.md).
 - `WEBAUTHN_RP_ID` (nom d'hôte, sans port) et `WEBAUTHN_ORIGIN` (URL exacte du frontend) doivent correspondre à l'adresse du navigateur.
-- `PAYMENT_API_TOKEN` reste accepté par l'API pour les scripts et les `curl`.
+- Sous Windows, si la reconnaissance faciale reste bloquée sur « Préparation… », utiliser le code PIN (Options de connexion).
 
 L'interface propose trois thèmes (clair, sombre, automatique) via le sélecteur en haut à droite.
 
@@ -120,7 +131,7 @@ L'interface propose trois thèmes (clair, sombre, automatique) via le sélecteur
 ### Tests automatisés
 
 ```bash
-cd backend && npm install && npm test          # authentification WebAuthn, secrets (12 tests)
+cd backend && npm install && npm test          # authentification mot de passe et WebAuthn, secrets (21 tests)
 ```
 
 ```bash

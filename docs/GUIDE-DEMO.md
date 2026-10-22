@@ -44,11 +44,11 @@ curl.exe http://localhost:3000/health
 .\security\e2e_test.ps1 -SkipDisruptive
 ```
 
-Attendu : `{"status":"ok","service":"payment-api","database":"ok"}` puis des PASS partout (21 contrôles sans panne). La recette complète, pannes comprises, dure environ 10 minutes : la lancer la veille, pas juste avant le passage.
+Attendu : `{"status":"ok","service":"payment-api","database":"ok"}` puis des PASS partout (24 contrôles sans panne). La recette complète, pannes comprises, dure environ 10 minutes : la lancer la veille, pas juste avant le passage.
 
 ### 1.4 Disposition d'écran du PC Hôte
 
-À gauche, le dashboard de paiement (http://localhost:8080), connecté par Face ID. À droite, Grafana (http://localhost:3001), dashboard « Resilience Alpha - Incident & Recovery », période 15 minutes, actualisation 5 s. Un terminal réduit avec `docker compose logs -f remediator`. Un deuxième onglet Grafana prêt sur « Resilience Alpha - SOC ».
+À gauche, le dashboard de paiement (http://localhost:8080), connecté avec l'identifiant et le mot de passe. À droite, Grafana (http://localhost:3001), dashboard « Resilience Alpha - Incident & Recovery », période 15 minutes, actualisation 5 s. Un terminal réduit avec `docker compose logs -f remediator`. Un deuxième onglet Grafana prêt sur « Resilience Alpha - SOC ».
 
 Identifiants Grafana : `admin` et la valeur de `GRAFANA_ADMIN_PASSWORD` à la **première** initialisation du volume (par défaut, la valeur du modèle `.env.example`).
 
@@ -60,7 +60,7 @@ Attendre que Prometheus n'ait plus d'alerte active (http://localhost:9090/alerts
 docker exec resilience-postgres psql -U resilience -d resilience -c "DELETE FROM payments WHERE recipient LIKE 'test-%'"
 ```
 
-Ne jamais faire `docker compose down -v` avant le passage : cela supprime la passkey Face ID, les modèles de l'assistant et les données.
+Ne jamais faire `docker compose down -v` avant le passage : cela supprime les modèles de l'assistant et les données (et les passkeys en mode `webauthn`).
 
 ---
 
@@ -70,9 +70,9 @@ Ne jamais faire `docker compose down -v` avant le passage : cela supprime la pas
 
 > « Une plateforme de paiement fictive subit des incidents que les équipes réparent à la main. Notre objectif : prouver qu'elle détecte l'anomalie, décide et se répare **sans opérateur**, puis le prouve par une nouvelle transaction acceptée. Cinq domaines : développement, infrastructure, IA, cybersécurité, gouvernance. »
 
-### Étape 1 - État nominal et accès Face ID (30 s)
+### Étape 1 - État nominal et connexion (30 s)
 
-**Faire** : montrer le dashboard de paiement connecté. Faire un paiement (`test-nominal`, 10 €) avec le raccourci « 10,00 € ». Basculer rapidement le thème (clair, sombre, auto).
+**Faire** : montrer le dashboard de paiement connecté (connexion faite 5 minutes avant : la session dure 15 minutes). Faire un paiement (`test-nominal`, 10 €) avec le raccourci « 10,00 € ». Basculer rapidement le thème (clair, sombre, auto).
 
 **Voir** : bandeau « API disponible » en vert, la transaction apparaît dans « Dernières transactions », la latence mesurée (quelques millisecondes), Grafana avec API à `1` et anomalie ML à `0`.
 
@@ -124,7 +124,7 @@ Ne **rien** toucher ensuite. Laisser le jury regarder.
 
 **Voir** : « transaction enregistrée » et la ligne dans l'historique, **en plus** de celles d'avant la panne.
 
-**Dire** : « Le service répond et aucune donnée n'a été perdue : les transactions sont dans un volume PostgreSQL persistant. RPO nul sur les transactions validées. Reprise mesurée : 28,7 secondes en moyenne sur 3 essais pour l'API, 27,3 secondes pour la base. »
+**Dire** : « Le service répond et aucune donnée n'a été perdue : les transactions sont dans un volume PostgreSQL persistant. RPO nul sur les transactions validées. Reprise mesurée : environ 25 secondes en moyenne sur 6 essais pour l'API (de 19 à 33 s), environ 24 secondes pour la base. »
 
 ### Étape 5 - Supervision, SOC et assistant (40 s)
 
@@ -150,13 +150,13 @@ Le remediator répare d'abord PostgreSQL, puis vérifie l'API. Reprise en enviro
 
 | Quoi | Commande | Résultat attendu |
 |---|---|---|
-| Tests unitaires backend | `cd backend; npm install; npm test` | 12 tests, 0 échec |
+| Tests unitaires backend | `cd backend; npm install; npm test` | 21 tests, 0 échec |
 | Tests unitaires détecteur | `cd ai-detector; python -m unittest discover -s tests -v` | 9 tests |
 | Tests unitaires remediator | `python -m unittest discover -s ansible/tests -v` | 6 tests |
 | Tests unitaires assistant | `python -m unittest discover -s assistant/tests -v` | 6 tests |
-| Recette complète | `.\security\e2e_test.ps1` | 26 contrôles, 0 échec (environ 10 minutes) |
-| Recette sans panne | `.\security\e2e_test.ps1 -SkipDisruptive` | 21 contrôles |
-| Parcours Face ID automatisé | voir [TESTS.md](TESTS.md) section 3 | 8 contrôles sur 8 |
+| Recette complète | `.\security\e2e_test.ps1` | 29 contrôles, 0 échec (environ 10 minutes) |
+| Recette sans panne | `.\security\e2e_test.ps1 -SkipDisruptive` | 24 contrôles |
+| Parcours de connexion automatisé | voir [TESTS.md](TESTS.md) section 3 | 8 contrôles sur 8 |
 
 Vérifications manuelles utiles pour comprendre :
 
@@ -187,7 +187,8 @@ docker inspect resilience-remediator --format '{{range .Mounts}}{{.Source}} {{en
 | `docker compose up` : `dockerDesktopLinuxEngine ... not found` | Docker Desktop non démarré | Lancer Docker Desktop, attendre `Engine running` |
 | `required variable ... is missing` | Variable absente de `.env` | Comparer avec `.env.example` |
 | L'API ne démarre pas, `auth_failed` dans ses logs | Mot de passe PostgreSQL du `.env` différent de celui de la première initialisation du volume | Remettre l'ancien mot de passe (le volume ne le relit pas) |
-| Connexion Face ID impossible | Hors `localhost` en HTTP, ou `WEBAUTHN_ORIGIN` incorrect | Utiliser `http://localhost:8080` sur le PC Hôte |
+| Connexion impossible (mode mot de passe) | Mauvais identifiant ou mot de passe, ou source bloquée une minute après 5 échecs | Relire `DASHBOARD_USER` / `DASHBOARD_PASSWORD` dans `.env`, attendre une minute |
+| Connexion Face ID impossible (mode `webauthn`) | Hors `localhost` en HTTP, ou `WEBAUTHN_ORIGIN` incorrect | Utiliser `http://localhost:8080` sur le PC Hôte |
 | Enrôlement « Authentification refusée » | Code d'enrôlement incorrect | Utiliser la valeur de `PAYMENT_API_TOKEN` |
 | Windows demande une clé USB | Mauvais authentificateur | Annuler, choisir Windows Hello (configurer un code PIN dans Paramètres, Comptes, Options de connexion) |
 | Grafana refuse le mot de passe | Le volume a gardé le mot de passe de la première initialisation | `docker exec resilience-grafana grafana cli admin reset-admin-password <nouveau>` |
@@ -229,7 +230,7 @@ Détection par Prometheus (scrape 5 s) et condition d'alerte de 5 s, appel du re
 Le remediator traite un playbook à la fois ; une alerte reçue pendant l'exécution est mise en file et relancée aussitôt. Cas limite connu : une deuxième panne moins d'une minute après la première peut retarder la reprise.
 
 **Quelle part du code est générée par IA ?**
-Le sujet autorise ces outils à condition de les maîtriser. Nous avons vérifié et testé : 33 tests automatisés, une recette de 26 contrôles, et des défauts réels découverts puis corrigés pendant les essais (voir TESTS.md).
+Le sujet autorise ces outils à condition de les maîtriser. Nous avons vérifié et testé : 42 tests automatisés, une recette de 26 contrôles, et des défauts réels découverts puis corrigés pendant les essais (voir TESTS.md).
 
 ---
 
@@ -237,15 +238,15 @@ Le sujet autorise ces outils à condition de les maîtriser. Nous avons vérifi�
 
 | Mesure | Valeur |
 |---|---|
-| Reprise après arrêt de l'API | 33, 28, 25 s : moyenne 28,7 s |
-| Reprise après arrêt de PostgreSQL | 24, 26, 32 s : moyenne 27,3 s |
+| Reprise après arrêt de l'API | 6 essais : de 19 à 33 s, moyenne d'environ 25 s |
+| Reprise après arrêt de PostgreSQL | 6 essais : de 20 à 32 s, moyenne d'environ 24 s |
 | RTO visé | 60 s |
 | RPO | 0 pour les transactions validées |
 | Scrape Prometheus / alerte | 5 s / 5 s |
-| Session Face ID | 15 minutes |
-| Tests automatisés | 30 (backend 12, détecteur 9, remediator 6, assistant 6) |
-| Recette de bout en bout | 26 contrôles sur 26 |
-| Parcours Face ID automatisé | 8 contrôles sur 8 |
+| Session de connexion | 15 minutes |
+| Tests automatisés | 30 (backend 21, détecteur 9, remediator 6, assistant 6) |
+| Recette de bout en bout | 29 contrôles sur 29 |
+| Parcours de connexion automatisé | 8 contrôles sur 8 |
 | Rafale détectée par le ML | environ 13 rejets/s, verdict en moins de 10 s |
 | Modèle de l'assistant | qwen2.5:1.5b (1,5 milliard de paramètres), réponse en environ 35 s |
 | Services de la plateforme | 16 conteneurs |

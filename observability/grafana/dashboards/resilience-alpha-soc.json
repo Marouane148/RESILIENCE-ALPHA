@@ -127,7 +127,7 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Connexions Face ID réussies (1 h)",
+      "title": "Connexions réussies (1 h)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -140,7 +140,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(payment_api_auth_events_total{event=\"login_success\"}[1h])) or vector(0)",
+          "expr": "sum(increase(payment_api_auth_events_total{event=~\"login_success|password_login_success\"}[1h])) or vector(0)",
           "refId": "A",
           "instant": true
         }
@@ -194,7 +194,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(payment_api_auth_events_total{event!~\"login_success|register_success\"}[1h])) or vector(0)",
+          "expr": "sum(increase(payment_api_auth_events_total{event!~\"login_success|register_success|password_login_success\"}[1h])) or vector(0)",
           "refId": "A",
           "instant": true
         }

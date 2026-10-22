@@ -58,6 +58,8 @@ services:
       PAYMENT_API_TOKEN: ${PAYMENT_API_TOKEN:?Define PAYMENT_API_TOKEN in .env}
       SESSION_SECRET: ${SESSION_SECRET:?Define SESSION_SECRET in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD in .env}
+      DASHBOARD_USER: ${DASHBOARD_USER:-riad}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?Define DASHBOARD_PASSWORD in .env}
     configs:
       - source: vault-init-script
         target: /vault-init.sh
@@ -82,6 +84,8 @@ services:
       POSTGRES_HOST: postgres
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: ${VAULT_APP_TOKEN:?Define VAULT_APP_TOKEN in .env}
+      # Connexion : 'password' (défaut) ou 'webauthn' (Face ID, Touch ID, Windows Hello).
+      AUTH_MODE: ${AUTH_MODE:-password}
       WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
       WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-http://localhost:8080}
       ASSISTANT_URL: http://assistant:8090
@@ -499,7 +503,7 @@ configs:
       vault kv put -mount=secret resilience \
         PAYMENT_API_TOKEN="$$PAYMENT_API_TOKEN" \
         SESSION_SECRET="$$SESSION_SECRET" \
-        POSTGRES_PASSWORD="$$POSTGRES_PASSWORD" >/dev/null
+        POSTGRES_PASSWORD="$$POSTGRES_PASSWORD"         DASHBOARD_USER="$$DASHBOARD_USER"         DASHBOARD_PASSWORD="$$DASHBOARD_PASSWORD" >/dev/null
       printf 'path "secret/data/resilience" {\n  capabilities = ["read"]\n}\n' | vault policy write payment-api - >/dev/null
       vault token revoke "$$VAULT_APP_TOKEN" >/dev/null 2>&1 || true
       vault token create -id="$$VAULT_APP_TOKEN" -policy=payment-api -no-default-policy >/dev/null
@@ -587,15 +591,15 @@ configs:
                 description: Isolation Forest signale un profil de trafic inhabituel.
 
             - alert: PaymentBiometricAuthFailures
-              expr: sum(increase(payment_api_auth_events_total{event=~"webauthn_.*"}[2m])) > 5
+              expr: sum(increase(payment_api_auth_events_total{event=~"webauthn_.*|password_failed|password_blocked"}[2m])) > 5
               for: 5s
               labels:
                 severity: warning
                 category: security
                 service: payment-api
               annotations:
-                summary: Échecs répétés d'authentification biométrique
-                description: Plus de 5 échecs WebAuthn en 2 minutes (tentative de force brute ou clé clonée).
+                summary: Échecs répétés d'authentification
+                description: Plus de 5 échecs de connexion en 2 minutes (force brute sur le mot de passe, assertion WebAuthn invalide ou clé clonée).
 
   loki-config:
     content: |

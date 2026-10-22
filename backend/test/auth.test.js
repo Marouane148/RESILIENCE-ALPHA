@@ -7,7 +7,7 @@ describe('authentification WebAuthn (Face ID)', () => {
   const device = createVirtualAuthenticator();
   let session;
 
-  before(async () => { ctx = await startAuthServer(); });
+  before(async () => { ctx = await startAuthServer({ mode: 'webauthn' }); });
   after(async () => { await ctx.close(); });
 
   it('refuse les routes métier et l’enrôlement sans jeton', async () => {

@@ -68,7 +68,7 @@ Conteneurs sans privilèges Linux, système de fichiers en lecture seule, résea
 |---|---|---|---|---|
 | SS1 | 12 | Détection ML + alerte de rafale, WAF, limitation du corps de requête, supervision SOC | 6 | Accepter ; ajouter une limitation de débit par source en production |
 | SS2 | 12 | WAF OWASP CRS, requêtes SQL paramétrées, validation stricte des entrées | 4 | Accepter |
-| SS3 | 6 | Passkey avec vérification utilisateur obligatoire, challenge à usage unique, compteur de signature, sessions de 15 minutes | 3 | Accepter |
+| SS3 | 6 | Mot de passe dans Vault, blocage de la source après 5 échecs par minute, sessions de 15 minutes ; en option, passkey avec vérification utilisateur obligatoire, challenge à usage unique, compteur de signature | 3 | Accepter |
 | SS4 | 8 | Jeton obligatoire, réseau interne, proxy Docker restreint aux conteneurs, deux conteneurs ciblés | 4 | Accepter ; durcir par un proxy filtrant le contenu des requêtes |
 | SS5 | 12 | Healthchecks, Prometheus 5 s, remédiation Ansible ordonnée, vérification métier, volume persistant | 4 | Accepter ; ajouter la réplication en production |
 | SS6 | 9 | Vault, token applicatif en lecture seule, `.env` ignoré par Git | 6 | Réduire : Vault persistant avec rotation en production |

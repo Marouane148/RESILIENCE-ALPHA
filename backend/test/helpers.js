@@ -37,17 +37,24 @@ export function createFakePool() {
   };
 }
 
-export async function startAuthServer() {
+export const dashboardUser = 'riad';
+export const dashboardPassword = 'mot-de-passe-de-test';
+
+export async function startAuthServer({ mode = 'webauthn' } = {}) {
   const events = { rejected: [], accepted: [] };
   const auth = createAuth({
     pool: createFakePool(),
     apiToken: labToken,
+    mode,
+    dashboardUser,
+    dashboardPassword,
     onRejected: (reason) => events.rejected.push(reason),
     onEvent: (event) => events.accepted.push(event),
   });
   await auth.init();
 
   const app = express();
+  app.set('trust proxy', 1);
   app.use(express.json());
   app.use((request, response, next) => (auth.isPublic(request) || auth.isAuthorized(request)
     ? next()

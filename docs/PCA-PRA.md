@@ -6,8 +6,8 @@ Plans adaptés au démonstrateur livré. Les valeurs de reprise sont **mesurées
 
 | Fonction | Criticité | RTO visé | RTO mesuré | RPO |
 |---|---|---|---|---|
-| Exécution des paiements (API) | Critique | 60 s | 28,7 s en moyenne (25 à 33 s) | 0 (transactions validées dans PostgreSQL) |
-| Base de données PostgreSQL | Critique | 60 s | 27,3 s en moyenne (24 à 32 s) | 0 (volume persistant) |
+| Exécution des paiements (API) | Critique | 60 s | environ 25 s en moyenne (19 à 33 s, 6 essais) | 0 (transactions validées dans PostgreSQL) |
+| Base de données PostgreSQL | Critique | 60 s | environ 24 s en moyenne (20 à 32 s, 6 essais) | 0 (volume persistant) |
 | Supervision et alertes | Importante | 5 min | n/a | 15 jours de métriques |
 | Assistant opérateur | Secondaire | 30 min | n/a | n/a (index reconstruit au démarrage) |
 

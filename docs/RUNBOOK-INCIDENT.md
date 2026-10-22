@@ -54,15 +54,18 @@ Vérifier le score (`resilience_anomaly_score`) et le taux de rejets dans Grafan
 
 ## Alerte PaymentBiometricAuthFailures (sécurité, avertissement)
 
-Signification : plus de 5 échecs d'authentification WebAuthn en 2 minutes (assertion invalide, clé inconnue, challenge rejoué, compteur de signature non croissant).
+Signification : plus de 5 échecs d'authentification en 2 minutes (mauvais mot de passe, blocage de la source, ou en mode passkey : assertion invalide, clé inconnue, challenge rejoué, compteur de signature non croissant).
 
-Actions : consulter les événements `webauthn_*` et `auth_rejected` dans le dashboard SOC ; un compteur non croissant peut indiquer une clé clonée, à traiter comme une compromission potentielle (supprimer le credential concerné et réenrôler l'appareil).
+Actions : consulter les événements `password_failed`, `password_blocked`, `webauthn_*` et `auth_rejected` dans le dashboard SOC ; un compteur non croissant peut indiquer une clé clonée, à traiter comme une compromission potentielle (supprimer le credential concerné et réenrôler l'appareil).
 
 ## Attaque bloquée par le WAF
 
 Le WAF ModSecurity avec OWASP Core Rule Set filtre les requêtes avant l'API. Une tentative d'injection SQL ou de script répond 403 et laisse une trace `ModSecurity: Access denied` dans les logs du conteneur `resilience-waf`, visible dans le dashboard SOC. Ces requêtes n'atteignent jamais l'API.
 
-## Connexion Face ID impossible
+## Connexion impossible
+
+- Mode mot de passe (défaut) : vérifier l'identifiant et le mot de passe (`DASHBOARD_USER`, `DASHBOARD_PASSWORD` dans `.env`). Après 5 échecs en une minute, la source est bloquée une minute (message « Trop de tentatives »).
+- Mode passkey (`AUTH_MODE=webauthn`) :
 
 - WebAuthn exige HTTPS ou `localhost`. Depuis une autre machine en `http://IP`, la connexion biométrique est indisponible.
 - Vérifier `WEBAUTHN_RP_ID` et `WEBAUTHN_ORIGIN` : ils doivent correspondre exactement à l'adresse du navigateur.
